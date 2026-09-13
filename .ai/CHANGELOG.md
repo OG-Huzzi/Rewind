@@ -54,3 +54,69 @@ Fixes for the independent verification findings in
   rollback recovery, genuine external modifications during rollback,
   junction classification, archive verification with staging cleanup, and
   CLI parse/e2e coverage.
+
+## Phase 1.2 — final foundation hardening and cross-platform verification
+
+Fixes for the Phase 1.2 hardening charter (repo live at
+`OG-Huzzi/Rewind`):
+
+- Fix #1: the passive hook is bounded and fail-open. The scan runs under a
+  50 ms deadline and the whole post-hook path (workspace open, lease,
+  scan, persistence) under a 150 ms total budget. Overruns append durable
+  bypass markers (log + catalog) and exit 0; a deadline-exceeded scan
+  records CAPTURE_FAILED and an unknown interval instead of fabricating
+  an observation. Deferred transaction recovery is never run inline in
+  the hook — a hook that finds an unfinished transaction records a bypass
+  marker and returns; recovery is writer work.
+- Fix #2: the writer lease opens `lock.pid` without truncation, acquires
+  the exclusive lock, and only then replaces the owner metadata. A
+  contender that loses the lock race can no longer zero the holder's
+  owner record.
+- Fix #3: every rollback step re-verifies path confinement *after* its
+  mutation (quarantine move, file/dir install, symlink install), so a
+  parent chain swapped to a symlink mid-transaction is detected instead
+  of written through. The symlinked-parent preflight refusal stands; the
+  post-mutation check narrows the TOCTOU window to the interval between
+  the final check and the mutation itself (documented residual race per
+  the Phase 0.7 conditional guarantee).
+- Fix #4: archives are verified recursively (type, size, BLAKE3 content
+  for files; literal target for symlinks; name-set equality plus
+  recursion for directories) before the transaction is marked Archived
+  and before local quarantine staging is disposed. A shallow pass can
+  never authorize deleting the last surviving copy.
+- Fix #5: Windows symlink restoration reads the recorded target kind
+  (from reparse data at scan time), never a filename extension; unknown
+  or externally-inferred kinds refuse restoration.
+- Fix #6: state identity is schema-versioned (envelope
+  `{schema_version, entries}` digested with BLAKE3; STATE_SCHEMA_VERSION
+  = 2). Manifests persisted before v2 deserialize with
+  `target_kind = unknown`, so existing states stay readable; fingerprint
+  semantics changes can never silently alias old state ids.
+- Fix #18: startup repair of committed-transaction metadata is idempotent
+  and journal-authoritative. A crash between the journal COMMITTED write
+  and the catalog updates converges on the next open (transaction row,
+  operation status by direction, baseline/condition when the live scan
+  confirms the target state). It never mutates the filesystem.
+- Fix #20: when recovery of an unfinished transaction fails, the
+  workspace is set RECOVERY_REQUIRED anchored at that transaction's
+  state before the error propagates — no path can leave a failed
+  recovery looking HEALTHY. `recover --reconcile` remains the explicit
+  archive/abandon/checkpoint exit.
+- Test portability: all test suites now build platform-native scripts
+  (`cmd /C` .cmd on Windows, executable .sh on POSIX) through
+  `tests/common/mod.rs`; content assertions account for CRLF vs LF.
+- Test suite: added `tests/hardening.rs` (8 real-filesystem regression
+  tests covering every fix above, including a real 1500-file bounded-hook
+  overrun, a real cross-process lease contender, and v1-manifest
+  backward compatibility). 30 integration tests total, all passing.
+- Repo hygiene: added `.gitignore`; untracked 5195 committed `target/`
+  build artifacts and the machine-local `.cargo/config.toml`
+  windows-gnu linker pin.
+- CI: GitHub Actions workflow (ubuntu-latest, macos-latest,
+  windows-latest/MSVC) running fmt --check, check --all-targets, clippy
+  -D warnings, and the full test suite per platform.
+- Measured (not redesigned, per charter): 400-file tree snapshot ≈ 2.5 s
+  per snapshot; restore/undo of a 400-file tree ≈ 15.7 minutes (debug
+  build, NTFS) — dominated by the per-step full-workspace rescan. The
+  Phase 1.2 charter forbids performance redesign; the measurement is
+  recorded as the Phase 2 baseline.
