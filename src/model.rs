@@ -12,6 +12,34 @@ pub struct MetadataFingerprint {
     pub readonly: bool,
 }
 
+/// State-identity schema version. The architecture defines a state's identity
+/// as a digest of the canonical serialized manifest *and* the manifest
+/// schema version, so any change to fingerprint semantics must produce a
+/// different state id. Existing rows keep their stored ids and remain
+/// readable; the first scan after an upgrade computes v2 ids, which the
+/// drift rules resolve through an explicit reconciliation checkpoint rather
+/// than silent invalidation.
+pub const STATE_SCHEMA_VERSION: u32 = 2;
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SymlinkTargetKind {
+    File,
+    Directory,
+    #[default]
+    Unknown,
+}
+
+impl SymlinkTargetKind {
+    /// True when the recorded kind is sufficient to choose the correct
+    /// Windows creation API (`symlink_file` vs `symlink_dir`). A kind
+    /// inferred from an external target is never trusted for restoration;
+    /// unknown kinds refuse restoration instead of guessing.
+    pub fn is_creatable(&self) -> bool {
+        !matches!(self, Self::Unknown)
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", content = "value")]
 pub enum Fingerprint {
@@ -28,6 +56,12 @@ pub enum Fingerprint {
     },
     Symlink {
         target: String,
+        /// Phase 1.2 (schema v2) addition. Older persisted manifests predate
+        /// target kinds; they deserialize with `Unknown`, which refuses
+        /// Windows restoration rather than guessing — existing states stay
+        /// readable instead of being silently invalidated.
+        #[serde(default)]
+        target_kind: SymlinkTargetKind,
         target_hash: String,
         metadata: MetadataFingerprint,
     },
@@ -91,9 +125,17 @@ impl Fingerprint {
             } => format!("DIRECTORY(hash={manifest_hash},entries={entry_count})"),
             Self::Symlink {
                 target,
+                target_kind,
                 target_hash,
                 ..
-            } => format!("SYMLINK(target_hash={target_hash},target={target})"),
+            } => {
+                let kind = match target_kind {
+                    SymlinkTargetKind::File => "file",
+                    SymlinkTargetKind::Directory => "directory",
+                    SymlinkTargetKind::Unknown => "unknown",
+                };
+                format!("SYMLINK(target_hash={target_hash},target={target},kind={kind})")
+            }
             Self::Unsupported {
                 object_kind,
                 descriptor,
@@ -107,6 +149,15 @@ pub struct Manifest {
     pub entries: BTreeMap<String, Fingerprint>,
 }
 
+/// Canonical manifest envelope: the schema version participates in the
+/// serialized bytes, so `state_id()` cannot silently equate manifests
+/// produced under different fingerprint semantics.
+#[derive(Serialize)]
+struct ManifestEnvelope<'a> {
+    schema_version: u32,
+    entries: &'a BTreeMap<String, Fingerprint>,
+}
+
 impl Manifest {
     pub fn empty() -> Self {
         Self {
@@ -115,7 +166,11 @@ impl Manifest {
     }
 
     pub fn canonical_bytes(&self) -> Result<Vec<u8>> {
-        serde_json::to_vec(self).map_err(RewindError::from)
+        let envelope = ManifestEnvelope {
+            schema_version: STATE_SCHEMA_VERSION,
+            entries: &self.entries,
+        };
+        serde_json::to_vec(&envelope).map_err(RewindError::from)
     }
 
     pub fn state_id(&self) -> Result<String> {

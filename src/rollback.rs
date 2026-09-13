@@ -563,6 +563,9 @@ fn apply_step(
                     backup
                 ))
             })?;
+            // Post-mutation confinement: the source path we just moved must
+            // still sit under real parent components (Fix #3 TOCTOU).
+            crate::paths::verify_mutation_confined(&workspace.root, &target_path, false)?;
         }
         journal.steps[index].backup_path = Some(backup.clone());
         workspace.storage.journals.write(journal)?;
@@ -585,6 +588,7 @@ fn apply_step(
                 ))
             })?;
             apply_metadata(&target_path, desired)?;
+            crate::paths::verify_mutation_confined(&workspace.root, &target_path, true)?;
         }
         Fingerprint::Directory { .. } => {
             ensure_parent_directories(&workspace.root, &target_path)?;
@@ -592,10 +596,30 @@ fn apply_step(
                 fs::create_dir(&target_path)?;
             }
             apply_metadata(&target_path, desired)?;
+            crate::paths::verify_mutation_confined(&workspace.root, &target_path, true)?;
         }
-        Fingerprint::Symlink { target, .. } => {
+        Fingerprint::Symlink {
+            target,
+            target_kind,
+            ..
+        } => {
             ensure_parent_directories(&workspace.root, &target_path)?;
-            create_symlink(target, &target_path)?;
+            create_symlink(target, *target_kind, &target_path)?;
+            // The installed leaf is legitimately a symlink here; verify the
+            // literal target matches the recorded bytes so a swapped
+            // parent chain is detected rather than followed.
+            let installed = fs::read_link(&target_path).map_err(|error| {
+                RewindError::Storage(format!(
+                    "installed symlink unreadable {}: {error}",
+                    target_path.display()
+                ))
+            })?;
+            if installed.to_string_lossy() != target.as_str() {
+                return Err(RewindError::PathEscape(format!(
+                    "installed symlink target diverged at {}",
+                    target_path.display()
+                )));
+            }
         }
         Fingerprint::Unsupported { .. } => {
             return Err(RewindError::Unsupported(format!(
@@ -727,19 +751,38 @@ fn apply_metadata(path: &Path, fingerprint: &Fingerprint) -> Result<()> {
     Ok(())
 }
 
-fn create_symlink(target: &str, destination: &Path) -> Result<()> {
+/// Creates a symlink from the recorded fingerprint. The file-vs-directory
+/// flavor comes from the recorded `target_kind`, never from a filename
+/// extension; an unknown kind is refused instead of guessed. The target is
+/// applied literally and never followed.
+fn create_symlink(
+    target: &str,
+    target_kind: crate::model::SymlinkTargetKind,
+    destination: &Path,
+) -> Result<()> {
     if destination.exists() || fs::symlink_metadata(destination).is_ok() {
         return Ok(());
     }
     #[cfg(unix)]
-    std::os::unix::fs::symlink(target, destination)?;
+    {
+        let _ = target_kind;
+        std::os::unix::fs::symlink(target, destination)?;
+    }
     #[cfg(windows)]
     {
-        let target_path = Path::new(target);
-        if target_path.extension().is_some() {
-            std::os::windows::fs::symlink_file(target, destination)?;
-        } else {
-            std::os::windows::fs::symlink_dir(target, destination)?;
+        use crate::model::SymlinkTargetKind;
+        match target_kind {
+            SymlinkTargetKind::File => std::os::windows::fs::symlink_file(target, destination)?,
+            SymlinkTargetKind::Directory => std::os::windows::fs::symlink_dir(target, destination)?,
+            // The scan never records a creatable symlink without a positive
+            // kind; a persisted state that lacks one (or was crafted) is
+            // refused rather than restored with a guessed flavor.
+            SymlinkTargetKind::Unknown => {
+                return Err(RewindError::Unsupported(format!(
+                    "symlink target kind is unknown; refusing to guess restoration for {}",
+                    destination.display()
+                )));
+            }
         }
     }
     Ok(())
@@ -781,6 +824,11 @@ fn sync_parent(path: &Path) -> Result<()> {
 }
 
 pub fn recover_locked(workspace: &Workspace) -> Result<()> {
+    // Metadata repair for physically committed transactions runs first; it
+    // is idempotent, never touches the filesystem, and guarantees that a
+    // crash between the journal COMMITTED write and the catalog updates
+    // cannot leave contradictory baseline/operation rows behind.
+    workspace.repair_committed_metadata()?;
     for (_path, mut journal) in workspace.storage.journals.pending_archives()? {
         archive_committed_transaction(workspace, &mut journal);
         dispose_of_staging(workspace, &journal);
@@ -805,63 +853,120 @@ pub fn recover_locked(workspace: &Workspace) -> Result<()> {
     if unfinished.is_empty() {
         return Ok(());
     }
-    for (_path, mut journal) in unfinished {
-        if journal.workspace_id != workspace.id {
-            return Err(RewindError::RecoveryRequired(
-                "journal belongs to another workspace".to_owned(),
-            ));
-        }
-        if matches!(
-            journal.status,
-            JournalStatus::Planned | JournalStatus::Prepared
-        ) {
-            prepare_steps(workspace, &mut journal)?;
-            journal.status = JournalStatus::Prepared;
-            workspace.storage.journals.write(&journal)?;
-        }
-        let target = workspace.state_manifest(&journal.target_state_id)?;
-        for index in 0..journal.steps.len() {
-            let step = journal.steps[index].clone();
-            let Some(path) = step.paths.first() else {
-                continue;
-            };
-            let scan = workspace.scan(None)?;
-            let actual = scan.manifest.get(path);
-            let desired = step.after.get(path).ok_or_else(|| {
-                RewindError::Journal(format!("recovery step {index} has no after state"))
-            })?;
-            let expected_before = step.before.get(path).ok_or_else(|| {
-                RewindError::Journal(format!("recovery step {index} has no before state"))
-            })?;
-            if compatible_after(&actual, desired) && backup_is_sufficient(&step, expected_before) {
-                journal.steps[index].status = JournalStatus::Durable;
-                workspace.storage.journals.write(&journal)?;
-                continue;
+    // Fix #20: from this point an unfinished transaction exists. Any
+    // failure in classification or completion — including transient
+    // storage, CAS, or I/O errors raised through `?` — must leave the
+    // workspace in RECOVERY_REQUIRED, never falsely HEALTHY. The inner
+    // closure returns the classification outcome and the wrapper enforces
+    // the condition transition before propagating the error.
+    let outcome = (|| -> Result<()> {
+        for (_path, mut journal) in unfinished {
+            if journal.workspace_id != workspace.id {
+                return Err(RewindError::RecoveryRequired(
+                    "journal belongs to another workspace".to_owned(),
+                ));
             }
-            if actual != *expected_before {
-                let known_quarantine_partial = matches!(actual, Fingerprint::Absent)
-                    && backup_matches_fingerprint(&step, expected_before)
-                    && desired_artifact_is_ready(&step, desired);
-                if known_quarantine_partial {
-                    if let Err(error) = apply_step(workspace, &mut journal, index, true) {
-                        journal.status = JournalStatus::RecoveryRequired;
-                        journal.steps[index].status = JournalStatus::RecoveryRequired;
-                        workspace.storage.journals.write(&journal)?;
-                        workspace.storage.catalog.update_transaction(
-                            journal.transaction_id,
-                            &JournalStatus::RecoveryRequired,
-                        )?;
-                        workspace.storage.catalog.set_workspace(
-                            workspace.id,
-                            &WorkspaceCondition::RecoveryRequired,
-                            Some(&journal.anchor_state_id),
-                        )?;
-                        return Err(error);
-                    }
+            if matches!(
+                journal.status,
+                JournalStatus::Planned | JournalStatus::Prepared
+            ) {
+                prepare_steps(workspace, &mut journal)?;
+                journal.status = JournalStatus::Prepared;
+                workspace.storage.journals.write(&journal)?;
+            }
+            let target = workspace.state_manifest(&journal.target_state_id)?;
+            for index in 0..journal.steps.len() {
+                let step = journal.steps[index].clone();
+                let Some(path) = step.paths.first() else {
+                    continue;
+                };
+                let scan = workspace.scan(None)?;
+                let actual = scan.manifest.get(path);
+                let desired = step.after.get(path).ok_or_else(|| {
+                    RewindError::Journal(format!("recovery step {index} has no after state"))
+                })?;
+                let expected_before = step.before.get(path).ok_or_else(|| {
+                    RewindError::Journal(format!("recovery step {index} has no before state"))
+                })?;
+                if compatible_after(&actual, desired)
+                    && backup_is_sufficient(&step, expected_before)
+                {
+                    journal.steps[index].status = JournalStatus::Durable;
+                    workspace.storage.journals.write(&journal)?;
                     continue;
                 }
+                if actual != *expected_before {
+                    let known_quarantine_partial = matches!(actual, Fingerprint::Absent)
+                        && backup_matches_fingerprint(&step, expected_before)
+                        && desired_artifact_is_ready(&step, desired);
+                    if known_quarantine_partial {
+                        if let Err(error) = apply_step(workspace, &mut journal, index, true) {
+                            journal.status = JournalStatus::RecoveryRequired;
+                            journal.steps[index].status = JournalStatus::RecoveryRequired;
+                            workspace.storage.journals.write(&journal)?;
+                            workspace.storage.catalog.update_transaction(
+                                journal.transaction_id,
+                                &JournalStatus::RecoveryRequired,
+                            )?;
+                            workspace.storage.catalog.set_workspace(
+                                workspace.id,
+                                &WorkspaceCondition::RecoveryRequired,
+                                Some(&journal.anchor_state_id),
+                            )?;
+                            return Err(error);
+                        }
+                        continue;
+                    }
+                    journal.status = JournalStatus::RecoveryRequired;
+                    journal.steps[index].status = JournalStatus::RecoveryRequired;
+                    workspace.storage.journals.write(&journal)?;
+                    workspace.storage.catalog.update_transaction(
+                        journal.transaction_id,
+                        &JournalStatus::RecoveryRequired,
+                    )?;
+                    workspace.storage.catalog.set_workspace(
+                        workspace.id,
+                        &WorkspaceCondition::RecoveryRequired,
+                        Some(&journal.anchor_state_id),
+                    )?;
+                    return Err(RewindError::RecoveryRequired(format!(
+                        "cannot classify recovery state at {path}"
+                    )));
+                }
+                if let Err(error) = apply_step(workspace, &mut journal, index, false) {
+                    journal.status = JournalStatus::RecoveryRequired;
+                    workspace.storage.journals.write(&journal)?;
+                    workspace.storage.catalog.update_transaction(
+                        journal.transaction_id,
+                        &JournalStatus::RecoveryRequired,
+                    )?;
+                    workspace.storage.catalog.set_workspace(
+                        workspace.id,
+                        &WorkspaceCondition::RecoveryRequired,
+                        Some(&journal.anchor_state_id),
+                    )?;
+                    return Err(error);
+                }
+            }
+            let final_scan = match workspace.scan(None) {
+                Ok(scan) => scan,
+                Err(error) => {
+                    journal.status = JournalStatus::RecoveryRequired;
+                    workspace.storage.journals.write(&journal)?;
+                    workspace.storage.catalog.update_transaction(
+                        journal.transaction_id,
+                        &JournalStatus::RecoveryRequired,
+                    )?;
+                    workspace.storage.catalog.set_workspace(
+                        workspace.id,
+                        &WorkspaceCondition::RecoveryRequired,
+                        Some(&journal.anchor_state_id),
+                    )?;
+                    return Err(error);
+                }
+            };
+            if final_scan.state_id != journal.target_state_id || final_scan.manifest != target {
                 journal.status = JournalStatus::RecoveryRequired;
-                journal.steps[index].status = JournalStatus::RecoveryRequired;
                 workspace.storage.journals.write(&journal)?;
                 workspace
                     .storage
@@ -872,82 +977,53 @@ pub fn recover_locked(workspace: &Workspace) -> Result<()> {
                     &WorkspaceCondition::RecoveryRequired,
                     Some(&journal.anchor_state_id),
                 )?;
-                return Err(RewindError::RecoveryRequired(format!(
-                    "cannot classify recovery state at {path}"
-                )));
+                return Err(RewindError::RecoveryRequired(
+                    "recovered steps do not match target state".to_owned(),
+                ));
             }
-            if let Err(error) = apply_step(workspace, &mut journal, index, false) {
-                journal.status = JournalStatus::RecoveryRequired;
-                workspace.storage.journals.write(&journal)?;
-                workspace
-                    .storage
-                    .catalog
-                    .update_transaction(journal.transaction_id, &JournalStatus::RecoveryRequired)?;
-                workspace.storage.catalog.set_workspace(
-                    workspace.id,
-                    &WorkspaceCondition::RecoveryRequired,
-                    Some(&journal.anchor_state_id),
-                )?;
-                return Err(error);
-            }
-        }
-        let final_scan = match workspace.scan(None) {
-            Ok(scan) => scan,
-            Err(error) => {
-                journal.status = JournalStatus::RecoveryRequired;
-                workspace.storage.journals.write(&journal)?;
-                workspace
-                    .storage
-                    .catalog
-                    .update_transaction(journal.transaction_id, &JournalStatus::RecoveryRequired)?;
-                workspace.storage.catalog.set_workspace(
-                    workspace.id,
-                    &WorkspaceCondition::RecoveryRequired,
-                    Some(&journal.anchor_state_id),
-                )?;
-                return Err(error);
-            }
-        };
-        if final_scan.state_id != journal.target_state_id || final_scan.manifest != target {
-            journal.status = JournalStatus::RecoveryRequired;
+            journal.status = JournalStatus::Committed;
             workspace.storage.journals.write(&journal)?;
             workspace
                 .storage
                 .catalog
-                .update_transaction(journal.transaction_id, &JournalStatus::RecoveryRequired)?;
+                .update_transaction(journal.transaction_id, &JournalStatus::Committed)?;
+            workspace.storage.catalog.set_workspace(
+                workspace.id,
+                &WorkspaceCondition::Healthy,
+                Some(&journal.target_state_id),
+            )?;
+            if let Some(operation_id) = journal.operation_id {
+                let status = if journal.direction == "UNDO" {
+                    OperationStatus::Undone
+                } else {
+                    OperationStatus::Completed
+                };
+                workspace
+                    .storage
+                    .catalog
+                    .set_operation_status(operation_id, status)?;
+            }
+            archive_committed_transaction(workspace, &mut journal);
+            dispose_of_staging(workspace, &journal);
+        }
+        Ok(())
+    })();
+    if let Err(error) = outcome {
+        let anchor = workspace
+            .storage
+            .journals
+            .unfinished()?
+            .first()
+            .map(|(_path, journal)| journal.anchor_state_id.clone());
+        let condition = workspace.condition().unwrap_or(WorkspaceCondition::Healthy);
+        if !matches!(condition, WorkspaceCondition::RecoveryRequired) {
             workspace.storage.catalog.set_workspace(
                 workspace.id,
                 &WorkspaceCondition::RecoveryRequired,
-                Some(&journal.anchor_state_id),
+                anchor.as_deref(),
             )?;
-            return Err(RewindError::RecoveryRequired(
-                "recovered steps do not match target state".to_owned(),
-            ));
         }
-        journal.status = JournalStatus::Committed;
-        workspace.storage.journals.write(&journal)?;
-        workspace
-            .storage
-            .catalog
-            .update_transaction(journal.transaction_id, &JournalStatus::Committed)?;
-        workspace.storage.catalog.set_workspace(
-            workspace.id,
-            &WorkspaceCondition::Healthy,
-            Some(&journal.target_state_id),
-        )?;
-        if let Some(operation_id) = journal.operation_id {
-            let status = if journal.direction == "UNDO" {
-                OperationStatus::Undone
-            } else {
-                OperationStatus::Completed
-            };
-            workspace
-                .storage
-                .catalog
-                .set_operation_status(operation_id, status)?;
-        }
-        archive_committed_transaction(workspace, &mut journal);
-        dispose_of_staging(workspace, &journal);
+        return Err(error);
     }
     Ok(())
 }
@@ -1128,7 +1204,7 @@ fn archive_committed_transaction(workspace: &Workspace, journal: &mut Journal) {
             }
             let destination = archive_root.join(step.id.to_string());
             copy_artifact(source, &destination)?;
-            verify_artifact_pair(source, &destination)?;
+            verify_archive_pair(source, &destination)?;
         }
         Ok(())
     })();
@@ -1158,14 +1234,25 @@ fn copy_artifact(source: &Path, destination: &Path) -> Result<()> {
     if metadata.file_type().is_symlink() {
         let target = fs::read_link(source)?;
         #[cfg(unix)]
-        std::os::unix::fs::symlink(target, destination)?;
+        std::os::unix::fs::symlink(&target, destination)?;
         #[cfg(windows)]
         {
-            let target_path = Path::new(&target);
-            if target_path.extension().is_some() {
-                std::os::windows::fs::symlink_file(target, destination)?;
-            } else {
-                std::os::windows::fs::symlink_dir(target, destination)?;
+            // The copy preserves the link's own file/dir flavor by inspecting
+            // the local reparse data, never by guessing from the target
+            // string.
+            match crate::scan::reparse_symlink_kind(source) {
+                Some(crate::model::SymlinkTargetKind::Directory) => {
+                    std::os::windows::fs::symlink_dir(&target, destination)?
+                }
+                Some(crate::model::SymlinkTargetKind::File) => {
+                    std::os::windows::fs::symlink_file(&target, destination)?
+                }
+                _ => {
+                    return Err(RewindError::Unsupported(format!(
+                        "cannot archive symlink with unreadable kind: {}",
+                        source.display()
+                    )));
+                }
             }
         }
     } else if metadata.is_dir() {
@@ -1190,9 +1277,19 @@ fn copy_artifact(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-fn verify_artifact_pair(source: &Path, destination: &Path) -> Result<()> {
-    let source_metadata = fs::symlink_metadata(source)?;
-    let destination_metadata = fs::symlink_metadata(destination)?;
+/// Recursively verifies that an external archive copy is byte- and
+/// type-faithful to the quarantined original (Fix #4). Regular files are
+/// compared by size and BLAKE3 content hash; symlinks by literal target and
+/// recorded kind; directories by child-name sets and recursive descent.
+/// `ArchiveStatus::Archived` is only ever set after this passes, so a
+/// shallow match can never authorize disposal of the last surviving copy.
+pub fn verify_archive_pair(source: &Path, destination: &Path) -> Result<()> {
+    let source_metadata = fs::symlink_metadata(source).map_err(|error| {
+        RewindError::Storage(format!("quarantine {}: {error}", source.display()))
+    })?;
+    let destination_metadata = fs::symlink_metadata(destination).map_err(|error| {
+        RewindError::Storage(format!("archive {}: {error}", destination.display()))
+    })?;
     if source_metadata.file_type().is_symlink() != destination_metadata.file_type().is_symlink()
         || source_metadata.is_dir() != destination_metadata.is_dir()
         || source_metadata.is_file() != destination_metadata.is_file()
@@ -1203,36 +1300,77 @@ fn verify_artifact_pair(source: &Path, destination: &Path) -> Result<()> {
         )));
     }
     if source_metadata.is_file() {
-        let source_hash = blake3::hash(&fs::read(source)?);
-        let destination_hash = blake3::hash(&fs::read(destination)?);
+        if source_metadata.len() != destination_metadata.len() {
+            return Err(RewindError::Storage(format!(
+                "archive size mismatch for {}",
+                source.display()
+            )));
+        }
+        let source_hash = blake3_hash_path(source)?;
+        let destination_hash = blake3_hash_path(destination)?;
         if source_hash != destination_hash {
             return Err(RewindError::Storage(format!(
                 "archive content mismatch for {}",
                 source.display()
             )));
         }
-    } else if source_metadata.file_type().is_symlink()
-        && fs::read_link(source)? != fs::read_link(destination)?
-    {
-        return Err(RewindError::Storage(format!(
-            "archive link mismatch for {}",
-            source.display()
-        )));
-    } else if source_metadata.is_dir() {
-        let mut source_entries = BTreeSet::new();
-        for item in fs::read_dir(source)? {
-            source_entries.insert(item?.file_name());
-        }
-        let mut destination_entries = BTreeSet::new();
-        for item in fs::read_dir(destination)? {
-            destination_entries.insert(item?.file_name());
-        }
-        if source_entries != destination_entries {
+    } else if source_metadata.file_type().is_symlink() {
+        let source_target = fs::read_link(source)?;
+        let destination_target = fs::read_link(destination)?;
+        if source_target != destination_target {
             return Err(RewindError::Storage(format!(
-                "archive directory mismatch for {}",
+                "archive link target mismatch for {}: {} vs {}",
+                source.display(),
+                source_target.display(),
+                destination_target.display()
+            )));
+        }
+    } else if source_metadata.is_dir() {
+        let mut source_entries = BTreeMap::new();
+        for item in fs::read_dir(source)? {
+            let item = item?;
+            source_entries.insert(item.file_name().to_string_lossy().into_owned(), item.path());
+        }
+        let mut destination_entries = BTreeMap::new();
+        for item in fs::read_dir(destination)? {
+            let item = item?;
+            destination_entries
+                .insert(item.file_name().to_string_lossy().into_owned(), item.path());
+        }
+        let source_names: BTreeSet<String> = source_entries.keys().cloned().collect();
+        let destination_names: BTreeSet<String> = destination_entries.keys().cloned().collect();
+        if source_names != destination_names {
+            let missing: Vec<String> = source_names
+                .difference(&destination_names)
+                .cloned()
+                .collect();
+            let unexpected: Vec<String> = destination_names
+                .difference(&source_names)
+                .cloned()
+                .collect();
+            return Err(RewindError::Storage(format!(
+                "archive directory mismatch for {}: missing={missing:?} unexpected={unexpected:?}",
                 source.display()
             )));
         }
+        for (name, source_path) in &source_entries {
+            let destination_path = &destination_entries[name];
+            verify_archive_pair(source_path, destination_path)?;
+        }
     }
     Ok(())
+}
+
+fn blake3_hash_path(path: &Path) -> Result<String> {
+    let mut file = fs::File::open(path)?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = [0_u8; 128 * 1024];
+    loop {
+        let count = std::io::Read::read(&mut file, &mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(hasher.finalize().to_hex().to_string())
 }

@@ -23,6 +23,8 @@ use rewind::model::{
 use rewind::paths::staging_root;
 use rewind::rollback::{recover_locked, recover_reconcile, redo, undo};
 use rewind::workspace::Workspace;
+mod common;
+
 use tempfile::TempDir;
 
 const TREE_FILES: usize = 12;
@@ -37,14 +39,18 @@ struct Fixture {
 }
 
 fn script_path(store: &Path, name: &str) -> PathBuf {
-    store.join(name)
+    if cfg!(windows) {
+        store.join(format!("{name}.cmd"))
+    } else {
+        store.join(format!("{name}.sh"))
+    }
 }
 
 fn init_fixture() -> Fixture {
     let root = tempfile::tempdir().expect("temporary workspace root");
     let store = tempfile::tempdir().expect("temporary store");
     fs::write(root.path().join("foo.txt"), b"A").expect("write fixture file");
-    let script = script_path(store.path(), "tree.cmd");
+    let script = script_path(store.path(), "tree-create");
     let workspace = Workspace::init(root.path(), Some(store.path())).expect("initialize");
     Fixture {
         root,
@@ -54,27 +60,33 @@ fn init_fixture() -> Fixture {
     }
 }
 
-/// Writes a cmd script that creates a directory tree inside the workspace
-/// and captures its creation with `rewind run`.
+/// Writes a platform-native script that creates a directory tree inside the
+/// workspace and captures its creation with `rewind run`. Shell output line
+/// endings differ per platform; content assertions use `common::echoed`.
 fn capture_tree_creation(fixture: &mut Fixture, files: usize, nested: bool) -> i64 {
-    let mut body = String::from("@echo off\r\nmkdir tree\r\n");
+    let mut windows = String::from("@echo off\r\nmkdir tree\r\n");
+    let mut posix = String::from("#!/bin/sh\nmkdir tree\n");
     for index in 0..files {
-        body.push_str(&format!("echo data-{index}> tree\\f{index}.txt\r\n"));
+        windows.push_str(&format!("echo data-{index}> tree\\f{index}.txt\r\n"));
+        posix.push_str(&format!("echo data-{index} > tree/f{index}.txt\n"));
     }
     if nested {
-        body.push_str("mkdir tree\\sub\r\nmkdir tree\\sub\\deep\r\n");
+        windows.push_str("mkdir tree\\sub\r\nmkdir tree\\sub\\deep\r\n");
+        posix.push_str("mkdir tree/sub\nmkdir tree/sub/deep\n");
         for index in 0..files {
-            body.push_str(&format!("echo nested-{index}> tree\\sub\\n{index}.txt\r\n"));
-            body.push_str(&format!(
+            windows.push_str(&format!("echo nested-{index}> tree\\sub\\n{index}.txt\r\n"));
+            windows.push_str(&format!(
                 "echo deep-{index}> tree\\sub\\deep\\d{index}.txt\r\n"
             ));
+            posix.push_str(&format!("echo nested-{index} > tree/sub/n{index}.txt\n"));
+            posix.push_str(&format!("echo deep-{index} > tree/sub/deep/d{index}.txt\n"));
         }
     }
-    fs::write(&fixture.script, body).expect("write creation script");
-    let script = fixture.script.to_string_lossy().replace('/', "\\");
+    fs::write(&fixture.script, &windows).expect("write windows script");
+    let argv = common::shell_script(fixture.store.path(), "tree-create", &windows, &posix);
     let outcome = fixture
         .workspace
-        .run_command(&["cmd".to_owned(), "/C".to_owned(), script])
+        .run_command(&argv)
         .expect("capture tree creation");
     assert!(outcome.captured, "tree creation was not captured");
     outcome.operation_id.expect("creation operation id")
@@ -165,11 +177,13 @@ fn redo_of_supervised_directory_deletion_removes_tree() {
     let mut fixture = init_fixture();
     capture_tree_creation(&mut fixture, TREE_FILES, false);
     let root = fixture.root.path().to_path_buf();
-    fs::write(&fixture.script, "@echo off\r\nrmdir /S /Q tree\r\n").expect("write deletion script");
-    let script = fixture.script.to_string_lossy().replace('/', "\\");
+    let windows = "@echo off\r\nrmdir /S /Q tree\r\n";
+    let posix = "#!/bin/sh\nrm -rf tree\n";
+    fs::write(&fixture.script, windows).expect("write windows script");
+    let argv = common::shell_script(fixture.store.path(), "tree-delete", windows, posix);
     let deletion = fixture
         .workspace
-        .run_command(&["cmd".to_owned(), "/C".to_owned(), script])
+        .run_command(&argv)
         .expect("capture tree deletion");
     let deletion_id = deletion.operation_id.expect("deletion operation id");
     assert!(!root.join("tree").exists());
@@ -463,11 +477,12 @@ fn recovery_refuses_unexpected_object_and_reconcile_resolves() {
     assert!(journals.is_empty(), "abandoned journals are terminal");
 
     // Normal capture works again afterwards.
-    fs::write(&fixture.script, "@echo off\r\necho fresh> fresh.txt\r\n")
-        .expect("write fresh script");
-    let script = fixture.script.to_string_lossy().replace('/', "\\");
+    let windows = "@echo off\r\necho fresh> fresh.txt\r\n";
+    let posix = "#!/bin/sh\necho fresh > fresh.txt\n";
+    fs::write(&fixture.script, windows).expect("write windows script");
+    let argv = common::shell_script(fixture.store.path(), "fresh", windows, posix);
     let outcome = workspace
-        .run_command(&["cmd".to_owned(), "/C".to_owned(), script])
+        .run_command(&argv)
         .expect("strong capture after recovery");
     assert!(outcome.captured);
     assert!(root.join("fresh.txt").exists());
@@ -605,13 +620,22 @@ fn recovery_refuses_external_modification_of_unprocessed_child() {
 fn archive_of_quarantined_file_succeeds_and_staging_is_cleaned() {
     let fixture = init_fixture();
     let root = fixture.root.path().to_path_buf();
-    let outcome = fixture
-        .workspace
-        .run_command(&[
+    let argv = if cfg!(windows) {
+        vec![
             "cmd".to_owned(),
             "/C".to_owned(),
             "echo B> foo.txt".to_owned(),
-        ])
+        ]
+    } else {
+        vec![
+            "sh".to_owned(),
+            "-c".to_owned(),
+            "echo B > foo.txt".to_owned(),
+        ]
+    };
+    let outcome = fixture
+        .workspace
+        .run_command(&argv)
         .expect("capture modification");
     let operation_id = outcome.operation_id.expect("operation id");
     undo(&fixture.workspace, Some(operation_id), false).expect("undo modification");
@@ -740,7 +764,7 @@ fn cli_surface_parses_and_recovers() {
     // End-to-end CLI run through the real argument parser.
     let root = tempfile::tempdir().expect("workspace");
     let store = tempfile::tempdir().expect("store");
-    let store_path = store.path().to_string_lossy().replace('/', "\\");
+    let store_path = store.path().to_string_lossy().into_owned();
     let run = |args: &[&str], cwd: &Path| {
         let mut command = Command::new(bin);
         command.args(args).current_dir(cwd);
@@ -749,7 +773,23 @@ fn cli_surface_parses_and_recovers() {
     };
     let output = run(&["init", "."], root.path());
     assert!(output.status.success(), "cli init failed");
-    let output = run(&["run", "--", "cmd", "/C", "echo hi> hi.txt"], root.path());
+    let run_argv: Vec<String> = if cfg!(windows) {
+        vec![
+            "cmd".to_owned(),
+            "/C".to_owned(),
+            "echo hi> hi.txt".to_owned(),
+        ]
+    } else {
+        vec![
+            "sh".to_owned(),
+            "-c".to_owned(),
+            "echo hi > hi.txt".to_owned(),
+        ]
+    };
+    let mut cli_args = vec!["run".to_owned(), "--".to_owned()];
+    cli_args.extend(run_argv.iter().cloned());
+    let cli_args_ref: Vec<&str> = cli_args.iter().map(String::as_str).collect();
+    let output = run(&cli_args_ref, root.path());
     assert!(
         output.status.success(),
         "cli run must capture; stderr: {}",
@@ -757,7 +797,7 @@ fn cli_surface_parses_and_recovers() {
     );
     assert_eq!(
         fs::read(root.path().join("hi.txt")).expect("captured file"),
-        b"hi\r\n"
+        common::echoed("hi")
     );
     let output = run(&["status"], root.path());
     assert!(String::from_utf8_lossy(&output.stdout).contains("condition HEALTHY"));

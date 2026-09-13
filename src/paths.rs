@@ -237,6 +237,58 @@ pub fn remove_workspace_pointer(root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Post-mutation confinement verification (Phase 1.2 Fix #3). Pre-mutation
+/// checks necessarily run through a path string, so a racing external
+/// writer can swap a parent directory for a symlink between the check and
+/// the mutation. The mutation itself then resolved through whatever the
+/// components pointed at *at mutation time*; this re-inspection confirms the
+/// endpoint the operating system actually touched still sits inside the
+/// workspace under real (non-symlink) parent components. The residual race
+/// window between the mutation and this verification is documented by the
+/// Phase 0.7 contract as an accepted conditional-guarantee boundary;
+/// nothing here claims openat2-strength protection on platforms that do
+/// not provide descriptor-relative operations.
+///
+/// `mutated_leaf_exists` distinguishes "the leaf should now exist" (create,
+/// replace, quarantine-into) from "the leaf should now be absent"
+/// (removal); for the absent case the parent chain is still fully verified.
+pub fn verify_mutation_confined(
+    root: &Path,
+    mutated_path: &Path,
+    mutated_leaf_exists: bool,
+) -> Result<()> {
+    // The endpoint must remain addressable beneath the root with real
+    // directory parents (no symlink/reparse parent anywhere on the chain).
+    ensure_parent_confinement(root, mutated_path)?;
+    if mutated_leaf_exists {
+        let metadata = fs::symlink_metadata(mutated_path).map_err(|error| {
+            RewindError::PathEscape(format!(
+                "mutated path is missing after mutation {}: {error}",
+                mutated_path.display()
+            ))
+        })?;
+        if metadata.file_type().is_symlink() && !leaf_was_symlink_expected() {
+            // A leaf that is a symlink can only be legitimate when the
+            // mutation installed a recorded SYMLINK; the rollback layer
+            // passes `false` for those cases and re-verifies the target
+            // itself, so a symlink here means the endpoint was swapped.
+            return Err(RewindError::PathEscape(format!(
+                "mutated path became a symlink after mutation: {}",
+                mutated_path.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Reserved for the symlink-installation path; rollback calls
+/// `verify_mutation_confined` with `false` for leaf-exists after
+/// installing a symlink from a recorded fingerprint and separately
+/// re-reads the link target, so a true value is never needed here.
+fn leaf_was_symlink_expected() -> bool {
+    false
+}
+
 /// Best-effort flush of a directory's entry metadata so a just-published
 /// file is durable as a namespace entry. Windows does not expose a
 /// POSIX-style directory fsync; per the platform capability matrix the

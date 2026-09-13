@@ -73,11 +73,20 @@ impl Drop for WorkspaceLease {
 }
 
 impl WorkspaceLease {
+    /// Acquires the exclusive writer lease. The lock file is opened *without*
+    /// truncation: a contender that has not won the lock must never clobber
+    /// the owner metadata of the process that holds it. Only after the
+    /// exclusive lock is acquired are the contents replaced with this
+    /// process's owner record.
     pub fn acquire(workspace: &Workspace, nonblocking: bool) -> Result<Self> {
+        use std::io::{Seek, SeekFrom, Write};
         let path = workspace.storage.project_root.join("lock.pid");
+        // Deliberately NOT `.truncate(true)`: a contender that has not won the
+        // lock must never clobber the current owner's metadata. Truncation
+        // happens only after the exclusive lock is acquired below.
+        #[allow(clippy::suspicious_open_options)]
         let file = OpenOptions::new()
             .create(true)
-            .truncate(true)
             .read(true)
             .write(true)
             .open(&path)?;
@@ -86,21 +95,22 @@ impl WorkspaceLease {
         } else {
             file.lock_exclusive()
         };
-        if let Err(error) = result {
-            return Err(RewindError::LockUnavailable(format!(
-                "{}: {error}",
-                path.display()
-            )));
-        }
+        let mut file = match result {
+            Ok(()) => file,
+            Err(error) => {
+                return Err(RewindError::LockUnavailable(format!(
+                    "{}: {error}",
+                    path.display()
+                )));
+            }
+        };
+        // We own the lock: replacing owner metadata is now safe.
         let owner = format!(
-            "pid={} transaction-process={}\
-             \n",
+            "pid={} transaction-process={}\n",
             std::process::id(),
             Uuid::new_v4()
         );
-        use std::io::{Seek, SeekFrom, Write};
         file.set_len(0)?;
-        let mut file = file;
         file.seek(SeekFrom::Start(0))?;
         file.write_all(owner.as_bytes())?;
         file.sync_all()?;
@@ -266,6 +276,86 @@ impl Workspace {
         Ok(self.storage.catalog.state(state_id)?.manifest)
     }
 
+    /// Idempotent startup repair of *metadata* that a crash between the
+    /// journal COMMITTED write and the catalog updates could have left
+    /// contradictory (Phase 1.2 Fix #18): the physical transaction is done —
+    /// the journal is its authority — so this must never mutate the
+    /// filesystem. For every committed journal it enforces that the catalog
+    /// transaction row is COMMITTED, the workspace condition/baseline point
+    /// at the journal's target state, and the operation status matches the
+    /// journal direction. Repairs are single-row catalog updates, safe to
+    /// repeat on every startup.
+    pub fn repair_committed_metadata(&self) -> Result<()> {
+        let mut repaired = false;
+        for entry in
+            std::fs::read_dir(self.storage.project_root.join("journals")).map_err(|error| {
+                RewindError::Storage(format!("journal directory unreadable: {error}"))
+            })?
+        {
+            let entry = entry.map_err(|error| {
+                RewindError::Storage(format!("journal directory entry: {error}"))
+            })?;
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            let journal: crate::model::Journal = self.storage.journals.load(&path)?;
+            if !matches!(journal.status, crate::model::JournalStatus::Committed) {
+                continue;
+            }
+            if let Err(error) = self.storage.catalog.update_transaction(
+                journal.transaction_id,
+                &crate::model::JournalStatus::Committed,
+            ) {
+                // The row may not exist for a workspace recreated from its
+                // journal store; a real database failure still surfaces.
+                match error {
+                    RewindError::Database(_) => {}
+                    other => return Err(other),
+                }
+            }
+            if let Some(operation_id) = journal.operation_id {
+                let expected_status = if journal.direction == "UNDO" {
+                    crate::model::OperationStatus::Undone
+                } else {
+                    crate::model::OperationStatus::Completed
+                };
+                if let Ok(operation) = self.storage.catalog.operation(operation_id, self.id) {
+                    if operation.status != expected_status {
+                        self.storage
+                            .catalog
+                            .set_operation_status(operation_id, expected_status)?;
+                        repaired = true;
+                    }
+                }
+            }
+            let row = self.row()?;
+            let target_matches = row.baseline_state.as_deref() == Some(&journal.target_state_id);
+            let healthy = matches!(row.condition, WorkspaceCondition::Healthy);
+            if !target_matches || !healthy {
+                // Only point the baseline at the committed target when the
+                // live workspace agrees; otherwise the physical state must be
+                // re-established by a scan, which the drift rules in
+                // `run_command`/`reconcile` already perform. Metadata repair
+                // never invents trust in an unverified filesystem.
+                let scan = match self.scan(None) {
+                    Ok(scan) => scan,
+                    Err(_) => continue,
+                };
+                if scan.state_id == journal.target_state_id {
+                    self.storage.catalog.set_workspace(
+                        self.id,
+                        &WorkspaceCondition::Healthy,
+                        Some(&journal.target_state_id),
+                    )?;
+                    repaired = true;
+                }
+            }
+        }
+        let _ = repaired;
+        Ok(())
+    }
+
     pub fn reconcile_locked(&self, reason: &str) -> Result<String> {
         let condition = self.condition()?;
         if matches!(condition, WorkspaceCondition::RecoveryRequired) {
@@ -408,6 +498,7 @@ impl Workspace {
         }
         let _lease = WorkspaceLease::acquire(self, false)?;
         crate::rollback::recover_locked(self)?;
+        self.repair_committed_metadata()?;
         self.ensure_healthy_locked()?;
         let baseline = self.baseline_id()?;
         let pre_scan = match self.scan(None) {

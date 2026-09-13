@@ -8,6 +8,8 @@ use rewind::model::{
 use rewind::paths::staging_root;
 use rewind::rollback::{redo, undo};
 use rewind::workspace::Workspace;
+mod common;
+
 use tempfile::TempDir;
 
 fn fixture() -> (TempDir, TempDir, Workspace) {
@@ -41,16 +43,12 @@ fn initialization_creates_external_catalog_and_typed_state() {
 fn strong_run_undo_and_redo_restore_state_without_rerunning_command() {
     let (root, _store, workspace) = fixture();
     let outcome = workspace
-        .run_command(&[
-            "cmd".to_owned(),
-            "/C".to_owned(),
-            "echo B>foo.txt".to_owned(),
-        ])
+        .run_command(&run_echo("foo.txt", "B"))
         .expect("run command");
     assert!(outcome.captured);
     assert_eq!(
         fs::read_to_string(root.path().join("foo.txt")).expect("read"),
-        "B\r\n"
+        String::from_utf8(common::echoed("B")).expect("utf8")
     );
 
     let undone = undo(&workspace, outcome.operation_id, false).expect("undo");
@@ -66,7 +64,7 @@ fn strong_run_undo_and_redo_restore_state_without_rerunning_command() {
     let redone = redo(&workspace, outcome.operation_id).expect("redo");
     assert_eq!(
         fs::read_to_string(root.path().join("foo.txt")).expect("read after redo"),
-        "B\r\n"
+        String::from_utf8(common::echoed("B")).expect("utf8")
     );
     assert_eq!(
         workspace.baseline_id().expect("baseline"),
@@ -78,7 +76,7 @@ fn strong_run_undo_and_redo_restore_state_without_rerunning_command() {
 fn deletion_creation_and_type_replacement_restore_both_directions() {
     let (root, _store, workspace) = fixture();
     let deleted = workspace
-        .run_command(&["cmd".to_owned(), "/C".to_owned(), "del foo.txt".to_owned()])
+        .run_command(&delete_command("foo.txt"))
         .expect("capture deletion");
     assert!(!root.path().join("foo.txt").exists());
     undo(&workspace, deleted.operation_id, false).expect("undo deletion");
@@ -90,11 +88,7 @@ fn deletion_creation_and_type_replacement_restore_both_directions() {
     assert!(!root.path().join("foo.txt").exists());
 
     let created = workspace
-        .run_command(&[
-            "cmd".to_owned(),
-            "/C".to_owned(),
-            "echo N>new.txt".to_owned(),
-        ])
+        .run_command(&run_echo("new.txt", "N"))
         .expect("capture creation");
     undo(&workspace, created.operation_id, false).expect("undo creation");
     assert!(!root.path().join("new.txt").exists());
@@ -106,11 +100,7 @@ fn deletion_creation_and_type_replacement_restore_both_directions() {
 
     fs::write(root.path().join("foo.txt"), b"A").expect("recreate source");
     let type_change = workspace
-        .run_command(&[
-            "cmd".to_owned(),
-            "/C".to_owned(),
-            "del foo.txt & mkdir foo.txt".to_owned(),
-        ])
+        .run_command(&replace_with_directory("foo.txt"))
         .expect("capture type replacement");
     assert!(root.path().join("foo.txt").is_dir());
     undo(&workspace, type_change.operation_id, false).expect("undo type replacement");
@@ -124,11 +114,7 @@ fn deletion_creation_and_type_replacement_restore_both_directions() {
 fn conflict_refuses_and_force_preserves_live_bytes() {
     let (root, _store, workspace) = fixture();
     let outcome = workspace
-        .run_command(&[
-            "cmd".to_owned(),
-            "/C".to_owned(),
-            "echo B>foo.txt".to_owned(),
-        ])
+        .run_command(&run_echo("foo.txt", "B"))
         .expect("capture");
     fs::write(root.path().join("foo.txt"), b"external").expect("external edit");
     let conflict = undo(&workspace, outcome.operation_id, false);
@@ -151,11 +137,7 @@ fn conflict_refuses_and_force_preserves_live_bytes() {
 fn directory_child_mutation_does_not_quarantine_the_parent_directory() {
     let (root, _store, workspace) = fixture();
     let outcome = workspace
-        .run_command(&[
-            "cmd".to_owned(),
-            "/C".to_owned(),
-            "echo child>empty/new.txt".to_owned(),
-        ])
+        .run_command(&create_path_then_write("empty", "new.txt", "child"))
         .expect("capture child creation");
     assert!(root.path().join("empty/new.txt").is_file());
     undo(&workspace, outcome.operation_id, false).expect("undo child creation");
@@ -172,11 +154,7 @@ fn directory_child_mutation_does_not_quarantine_the_parent_directory() {
 fn recovery_completes_known_crash_after_quarantine_before_install() {
     let (root, _store, workspace) = fixture();
     let operation = workspace
-        .run_command(&[
-            "cmd".to_owned(),
-            "/C".to_owned(),
-            "echo B>foo.txt".to_owned(),
-        ])
+        .run_command(&run_echo("foo.txt", "B"))
         .expect("capture");
     let operation_id = operation.operation_id.expect("operation id");
     let record = workspace
@@ -275,11 +253,7 @@ fn snapshot_restore_is_a_state_transition_and_is_undoable() {
     let (root, _store, workspace) = fixture();
     let snapshot = workspace.create_snapshot("before-c").expect("snapshot");
     workspace
-        .run_command(&[
-            "cmd".to_owned(),
-            "/C".to_owned(),
-            "echo C>foo.txt".to_owned(),
-        ])
+        .run_command(&run_echo("foo.txt", "C"))
         .expect("capture C");
     let restored =
         rewind::rollback::restore_snapshot(&workspace, "before-c").expect("restore snapshot");
@@ -291,7 +265,7 @@ fn snapshot_restore_is_a_state_transition_and_is_undoable() {
     undo(&workspace, restored.operation_id, false).expect("undo restore");
     assert_eq!(
         fs::read_to_string(root.path().join("foo.txt")).expect("undo restore"),
-        "C\r\n"
+        String::from_utf8(common::echoed("C")).expect("utf8")
     );
 }
 
@@ -361,11 +335,7 @@ fn failed_capture_enters_reconciliation_and_does_not_fabricate_operation() {
     );
     fs::write(root.path().join("foo.txt"), b"C").expect("out-of-band change");
     let outcome = workspace
-        .run_command(&[
-            "cmd".to_owned(),
-            "/C".to_owned(),
-            "echo D>foo.txt".to_owned(),
-        ])
+        .run_command(&run_echo("foo.txt", "D"))
         .expect("run after reconciliation");
     assert!(outcome.captured);
     let operations = workspace
@@ -437,4 +407,92 @@ fn path_confinement_rejects_parent_escape() {
     let workspace = Workspace::init(root.path(), Some(store.path())).expect("initialize");
     let result = rewind::paths::workspace_path(Path::new(workspace.root.as_path()), "../escape");
     assert!(result.is_err());
+}
+
+// ---- portable supervised-command vectors --------------------------------
+// Each helper returns a single-command argv native to the platform, so the
+// suite asserts identical rollback behavior on Windows and POSIX CI.
+
+fn run_command_vector(script: &str, windows: &str, posix: &str) -> Vec<String> {
+    common::shell_script(&scratch_dir(), script, windows, posix)
+}
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+static SCRATCH_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+fn scratch_dir() -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "rewind-fixture-{}-{}",
+        std::process::id(),
+        SCRATCH_COUNTER.fetch_add(1, Ordering::SeqCst)
+    ));
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    dir
+}
+
+fn run_echo(file: &str, content: &str) -> Vec<String> {
+    if cfg!(windows) {
+        vec![
+            "cmd".to_owned(),
+            "/C".to_owned(),
+            format!("echo {content}>{file}"),
+        ]
+    } else {
+        vec![
+            "sh".to_owned(),
+            "-c".to_owned(),
+            format!("echo {content} > {file}"),
+        ]
+    }
+}
+
+fn delete_command(file: &str) -> Vec<String> {
+    if cfg!(windows) {
+        vec!["cmd".to_owned(), "/C".to_owned(), format!("del {file}")]
+    } else {
+        vec!["rm".to_owned(), file.to_owned()]
+    }
+}
+
+fn replace_with_directory(path: &str) -> Vec<String> {
+    if cfg!(windows) {
+        vec![
+            "cmd".to_owned(),
+            "/C".to_owned(),
+            format!("del {path} & mkdir {path}"),
+        ]
+    } else {
+        vec![
+            "sh".to_owned(),
+            "-c".to_owned(),
+            format!("rm {path} && mkdir {path}"),
+        ]
+    }
+}
+
+fn create_path_then_write(dir: &str, file: &str, content: &str) -> Vec<String> {
+    if cfg!(windows) {
+        vec![
+            "cmd".to_owned(),
+            "/C".to_owned(),
+            format!("echo {content}>{dir}\\{file}"),
+        ]
+    } else {
+        vec![
+            "sh".to_owned(),
+            "-c".to_owned(),
+            format!("echo {content} > {dir}/{file}"),
+        ]
+    }
+}
+
+#[allow(dead_code)]
+fn unused_script_helper() -> Vec<String> {
+    run_command_vector(
+        "never",
+        "@echo off
+",
+        "#!/bin/sh
+",
+    )
 }

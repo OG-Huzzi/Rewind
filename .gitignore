@@ -1,0 +1,8 @@
+# Rust build artifacts — never track build output.
+/target
+
+# Local workspace state produced by CLI smoke runs.
+/.rewind
+
+# Machine-local cargo config (e.g. a local windows-gnu linker pin).
+/.cargo/config.toml

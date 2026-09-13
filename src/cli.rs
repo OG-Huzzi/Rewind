@@ -14,6 +14,13 @@ use crate::model::{
 use crate::rollback::{redo, restore_snapshot, undo};
 use crate::workspace::{state_summary, Workspace, WorkspaceLease};
 
+/// Passive-hook responsiveness contract (Phase 0.7 observation model): the
+/// scan deadline bounds the scan itself; the total budget bounds the whole
+/// post-hook path including workspace open, catalog lookups, and lease
+/// acquisition. Exceeding either fails open with a durable marker.
+const HOOK_SCAN_DEADLINE_MS: u64 = 50;
+const HOOK_BUDGET_MS: u64 = 150;
+
 #[derive(Debug, Parser)]
 #[command(
     name = "rewind",
@@ -395,8 +402,27 @@ fn hook_pre(command: &str, session: Option<&str>) -> Result<i32> {
 }
 
 fn hook_post(exit_code: i32, session: Option<&str>) -> Result<i32> {
+    // The hook must never block the interactive shell for bookkeeping
+    // (Phase 1.2 Fix #1). The total hook budget covers workspace open,
+    // lease acquisition, scan, and persistence; anything that cannot
+    // complete inside the budget fails open with a durable bypass marker,
+    // and the next writer converts that marker into the documented
+    // reconciliation gate. Deferred recovery is deliberately *not* run
+    // here: finishing a previous transaction is writer work with
+    // unbounded cost, so the hook only records a marker and returns.
+    let started = Instant::now();
+    let budget = Duration::from_millis(HOOK_BUDGET_MS);
+    let deadline = started + Duration::from_millis(HOOK_SCAN_DEADLINE_MS);
     let workspace = open_workspace()?;
     let session = session_id(session);
+    if started.elapsed() >= budget {
+        return hook_post_overrun(
+            &workspace,
+            &session,
+            exit_code,
+            "workspace open exceeded budget",
+        );
+    }
     let Some(boundary) = workspace
         .storage
         .catalog
@@ -412,17 +438,82 @@ fn hook_post(exit_code: i32, session: Option<&str>) -> Result<i32> {
         }
         Err(error) => return Err(error),
     };
-    let result = hook_post_locked(&workspace, &boundary, exit_code);
+    if started.elapsed() >= budget {
+        drop(lease);
+        return hook_post_overrun(
+            &workspace,
+            &session,
+            exit_code,
+            "lease acquisition exceeded budget",
+        );
+    }
+    let result = hook_post_locked(&workspace, &boundary, exit_code, deadline);
     drop(lease);
-    result
+    match result {
+        Ok(code) => Ok(code),
+        Err(RewindError::ScanIncomplete(reason)) if reason.contains("deadline") => {
+            // The bounded scan did not finish; record the capture gap
+            // durably instead of doing further work in the hook path.
+            let baseline = workspace.baseline_id().ok();
+            let _ = workspace.record_capture_failure(
+                baseline.as_deref(),
+                Some(boundary.command.clone()),
+                Some(boundary.cwd.clone()),
+                Some(exit_code),
+                &reason,
+            );
+            Ok(0)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Fail-open exit for a passive post-hook whose bookkeeping cannot complete
+/// within the responsiveness budget: a durable bypass marker is recorded so
+/// the next writer must reconcile before trusting anything recorded across
+/// this boundary. The shell never waits for the deferred work.
+fn hook_post_overrun(
+    workspace: &Workspace,
+    session: &str,
+    _exit_code: i32,
+    reason: &str,
+) -> Result<i32> {
+    let _ = session;
+    eprintln!("rewind hook: passive bookkeeping overran budget ({reason}); deferring");
+    let boundary = workspace
+        .storage
+        .catalog
+        .pending_boundary(workspace.id, session)?;
+    if let Some(boundary) = boundary {
+        append_bypass_marker(workspace, &boundary.id)?;
+    } else {
+        // No matching pending boundary (hook_pre may not have run); the
+        // workspace-level bypass is still recorded so the next writer
+        // reconciles rather than trusting a boundary-less interval.
+        append_bypass_marker(workspace, "no-boundary")?;
+    }
+    Ok(0)
 }
 
 fn hook_post_locked(
     workspace: &Workspace,
     boundary: &crate::db::BoundaryRow,
     exit_code: i32,
+    scan_deadline: Instant,
 ) -> Result<i32> {
-    crate::rollback::recover_locked(workspace)?;
+    // Deferred transaction recovery is intentionally omitted from the hook
+    // path: a writer that needs recovery owns the workspace and the hook
+    // must not pay its cost. If recovery is pending, the hook records a
+    // bypass marker and returns immediately.
+    if !workspace
+        .storage
+        .catalog
+        .unfinished_transactions(workspace.id)?
+        .is_empty()
+    {
+        append_bypass_marker(workspace, &boundary.id)?;
+        return Ok(0);
+    }
     workspace
         .storage
         .catalog
@@ -449,8 +540,7 @@ fn hook_post_locked(
         return Ok(0);
     }
     let baseline = workspace.baseline_id()?;
-    let deadline = Instant::now() + Duration::from_millis(50);
-    let scan = match workspace.scan(Some(deadline)) {
+    let scan = match workspace.scan(Some(scan_deadline)) {
         Ok(scan) => scan,
         Err(error) => {
             workspace.record_capture_failure(

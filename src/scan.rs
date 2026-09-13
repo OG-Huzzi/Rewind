@@ -7,7 +7,9 @@ use serde::Serialize;
 
 use crate::cas::Cas;
 use crate::error::{Result, RewindError};
-use crate::model::{Effect, EffectType, Fingerprint, Manifest, MetadataFingerprint};
+use crate::model::{
+    Effect, EffectType, Fingerprint, Manifest, MetadataFingerprint, SymlinkTargetKind,
+};
 use crate::paths::normalize_relative;
 
 #[derive(Clone, Debug)]
@@ -140,9 +142,11 @@ fn visit_directory(
                     ))
                 })?
                 .to_owned();
+            let target_kind = classify_symlink_target_kind(root, &path, target.as_str());
             let target_hash = blake3::hash(target.as_bytes()).to_hex().to_string();
             Fingerprint::Symlink {
                 target,
+                target_kind,
                 target_hash,
                 metadata: metadata_fingerprint(&metadata),
             }
@@ -177,6 +181,19 @@ fn visit_directory(
 /// whose tag cannot be read must be classified as UNSUPPORTED and must never
 /// be traversed or replaced. Returns `Some(fingerprint)` when the object must
 /// be recorded as unsupported.
+/// Public wrapper for archive/copy code that needs the authoritative
+/// file-vs-directory flavor of a positively identified Windows symlink.
+#[cfg(windows)]
+pub fn reparse_symlink_kind(path: &Path) -> Option<crate::model::SymlinkTargetKind> {
+    reparse_tag::symlink_kind(path)
+}
+
+/// Non-Windows platforms never call this; symlinks there have no flavor.
+#[cfg(not(windows))]
+pub fn reparse_symlink_kind(_path: &Path) -> Option<crate::model::SymlinkTargetKind> {
+    None
+}
+
 #[cfg(windows)]
 fn reparse_unsupported_fingerprint(
     metadata: &fs::Metadata,
@@ -232,6 +249,12 @@ mod reparse_tag {
     pub const IO_REPARSE_TAG_MOUNT_POINT: u32 = 0xA000_0003;
     pub const IO_REPARSE_TAG_SYMLINK: u32 = 0xA000_000C;
 
+    // Reparse buffer header: 8 bytes (ReparseTag + ReparseDataLength +
+    // Reserved), then the substitute name and print name strings. A file
+    // symlink buffer carries 12 bytes of flags before the names; the
+    // directory flag is bit 0 of that 32-bit flags word.
+    const SYMLINK_FLAG_DIRECTORY: u32 = 0x0001;
+
     const FSCTL_GET_REPARSE_POINT: u32 = 0x0009_00A8;
     const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
     const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
@@ -269,6 +292,26 @@ mod reparse_tag {
     /// Returns the reparse tag of the object at `path`, or `None` when the
     /// object carries no reparse point or the tag cannot be read.
     pub fn read_tag(path: &Path) -> Option<u32> {
+        read_reparse_buffer(path).map(|(tag, _buffer)| tag)
+    }
+
+    /// For a positively identified file symlink, returns whether the reparse
+    /// data marks it as a directory symlink. This is the authoritative
+    /// file-vs-directory distinction for link recreation on Windows.
+    pub fn symlink_kind(path: &Path) -> Option<crate::model::SymlinkTargetKind> {
+        let (tag, buffer) = read_reparse_buffer(path)?;
+        if tag != IO_REPARSE_TAG_SYMLINK || buffer.len() < 12 {
+            return None;
+        }
+        let flags = u32::from_le_bytes([buffer[8], buffer[9], buffer[10], buffer[11]]);
+        Some(if flags & SYMLINK_FLAG_DIRECTORY != 0 {
+            crate::model::SymlinkTargetKind::Directory
+        } else {
+            crate::model::SymlinkTargetKind::File
+        })
+    }
+
+    fn read_reparse_buffer(path: &Path) -> Option<(u32, Vec<u8>)> {
         let wide: Vec<u16> = path
             .as_os_str()
             .encode_wide()
@@ -303,9 +346,10 @@ mod reparse_tag {
             if ok == 0 || returned < 4 {
                 return None;
             }
-            Some(u32::from_le_bytes([
-                buffer[0], buffer[1], buffer[2], buffer[3],
-            ]))
+            Some((
+                u32::from_le_bytes([buffer[0], buffer[1], buffer[2], buffer[3]]),
+                buffer[..returned as usize].to_vec(),
+            ))
         }
     }
 }
@@ -325,6 +369,90 @@ fn metadata_fingerprint(metadata: &fs::Metadata) -> MetadataFingerprint {
             mode: None,
             readonly: metadata.permissions().readonly(),
         }
+    }
+}
+
+/// Determines whether the recorded symlink points at a file-like or
+/// directory-like object *without following the link through user-controlled
+/// path components*. Two evidence sources are trusted:
+///
+/// 1. On Windows, the reparse data itself distinguishes file symlinks from
+///    directory symlinks, which is authoritative for recreation
+///    (`symlink_file` vs `symlink_dir`).
+/// 2. On all platforms, when the target resolves inside the workspace root
+///    using no-follow component checks, the resolved object's kind is
+///    authoritative.
+///
+/// An external or dangling target is deliberately recorded as `Unknown`;
+/// restoring such a link is refused rather than guessed (Fix #5: never
+/// infer object type from a filename extension, never follow an escaping
+/// target merely to make restoration convenient).
+pub fn classify_symlink_target_kind(
+    root: &Path,
+    link_path: &Path,
+    target: &str,
+) -> SymlinkTargetKind {
+    #[cfg(windows)]
+    {
+        if let Some(kind) = windows_symlink_target_kind(link_path) {
+            return kind;
+        }
+    }
+    if let Some(kind) = workspace_symlink_target_kind(root, link_path, target) {
+        return kind;
+    }
+    SymlinkTargetKind::Unknown
+}
+
+/// Windows reparse data distinguishes file symlinks from directory symlinks
+/// via SYMLINK_FLAG_DIRECTORY in the reparse buffer.
+#[cfg(windows)]
+fn windows_symlink_target_kind(link_path: &Path) -> Option<SymlinkTargetKind> {
+    reparse_tag::symlink_kind(link_path)
+}
+
+/// Resolves the target relative to the link's directory using no-follow
+/// semantics; only a target that lands inside the workspace root is
+/// classified. Any symlink component in the resolution path, an escaping
+/// target, or an unresolvable target yields `None` (recorded as Unknown).
+fn workspace_symlink_target_kind(
+    root: &Path,
+    link_path: &Path,
+    target: &str,
+) -> Option<SymlinkTargetKind> {
+    let link_dir = link_path.parent()?;
+    let mut resolved = link_dir.to_path_buf();
+    for component in Path::new(target).components() {
+        match component {
+            std::path::Component::Normal(name) => {
+                let candidate = resolved.join(name);
+                // No-follow inspection: a symlink component inside the
+                // resolution path makes the destination untrusted.
+                let metadata = fs::symlink_metadata(&candidate).ok()?;
+                if metadata.file_type().is_symlink() {
+                    return None;
+                }
+                resolved = candidate;
+            }
+            std::path::Component::ParentDir => {
+                if !resolved.pop() {
+                    return None;
+                }
+            }
+            std::path::Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    if !resolved.starts_with(root) || resolved == root {
+        return None;
+    }
+    let metadata = fs::symlink_metadata(&resolved).ok()?;
+    if metadata.file_type().is_dir() {
+        Some(SymlinkTargetKind::Directory)
+    } else if metadata.is_file() {
+        Some(SymlinkTargetKind::File)
+    } else {
+        None
     }
 }
 
