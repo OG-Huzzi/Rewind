@@ -1,0 +1,4 @@
+# Shell integration must stay LF or POSIX shells break on CRLF.
+*.bash text eol=lf
+*.zsh text eol=lf
+integration/*.sh text eol=lf

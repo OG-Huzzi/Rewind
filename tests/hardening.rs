@@ -165,13 +165,18 @@ fn cli_in(bin: &str, store: &Path, root: &Path, args: &[&str]) -> std::process::
         .expect("run rewind cli")
 }
 
-/// Fix #1: a passive post-hook whose bounded scan cannot finish (large real
-/// workspace, real CAS + SQLite pressure) must fail open quickly with a
-/// durable CAPTURE_FAILED/gap record; undo is refused while gated, and
-/// explicit reconciliation restores HEALTHY without fabricating an
-/// operation for the unobserved interval.
+/// Phase 1.2 Fix #1 semantics (reframed by Phase 1.3): a post-hook whose
+/// bounded scan cannot finish (large real workspace, real CAS + SQLite
+/// pressure) must degrade conservatively — durable CAPTURE_FAILED/gap
+/// record, undo refused while gated, explicit reconciliation restores
+/// HEALTHY without fabricating an operation for the unobserved interval.
+/// The hook itself always exits 0 so a caller that does wait (the shell no
+/// longer does; see tests/shell_integration.rs) is never blocked on the
+/// process's own failure. No wall-clock duration is asserted here: the
+/// shell-facing non-blocking guarantee is a property of the shell
+/// integration, not of this process.
 #[test]
-fn passive_hook_fails_open_within_budget_on_slow_workspace() {
+fn passive_scan_deadline_degrades_to_capture_gap() {
     let bin = env!("CARGO_BIN_EXE_rewind");
     let (root, store, workspace) = init_workspace();
     // Real filesystem pressure: enough files that a full scan takes orders
@@ -206,26 +211,17 @@ fn passive_hook_fails_open_within_budget_on_slow_workspace() {
     );
     fs::write(root.path().join("hooked.txt"), b"hooked").expect("hooked change");
 
-    let started = Instant::now();
     let post = cli_in(
         bin,
         store.path(),
         root.path(),
         &["hook", "post", "--exit-code", "0", "--session", &session],
     );
-    let elapsed = started.elapsed();
     assert_eq!(
         post.status.code(),
         Some(0),
-        "hook must always fail open for the shell; stderr: {}",
+        "hook must always fail open for the caller; stderr: {}",
         String::from_utf8_lossy(&post.stderr)
-    );
-    // The hook budget is 150 ms for bookkeeping; the ceiling below covers
-    // process startup and cold caches on loaded CI runners, while still
-    // being far below anything that would block an interactive shell.
-    assert!(
-        elapsed < Duration::from_secs(5),
-        "post hook took {elapsed:?}; bookkeeping must be bounded"
     );
 
     assert_eq!(
@@ -293,7 +289,6 @@ fn passive_hook_defers_recovery_to_writer() {
         "pre hook failed: {}",
         String::from_utf8_lossy(&pre.stderr)
     );
-    let started = Instant::now();
     let post = cli_in(
         bin,
         store.path(),
@@ -306,11 +301,9 @@ fn passive_hook_defers_recovery_to_writer() {
         "hook must fail open; stderr: {}",
         String::from_utf8_lossy(&post.stderr)
     );
-    assert!(
-        started.elapsed() < Duration::from_secs(5),
-        "hook must not run unbounded recovery inline"
-    );
-    // The interrupted transaction is still unfinished: the hook deferred it.
+    // The interrupted transaction is still unfinished: the hook deferred it
+    // (structural evidence that recovery was not run inline — recovery
+    // would have completed or abandoned the transaction).
     assert!(
         !workspace
             .storage

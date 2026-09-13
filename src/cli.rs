@@ -14,12 +14,24 @@ use crate::model::{
 use crate::rollback::{redo, restore_snapshot, undo};
 use crate::workspace::{state_summary, Workspace, WorkspaceLease};
 
-/// Passive-hook responsiveness contract (Phase 0.7 observation model): the
-/// scan deadline bounds the scan itself; the total budget bounds the whole
-/// post-hook path including workspace open, catalog lookups, and lease
-/// acquisition. Exceeding either fails open with a durable marker.
+/// Passive-hook bookkeeping scan budget (Phase 0.7 observation model): the
+/// hook's scan is bounded by this deadline, counted from the moment the
+/// scan is about to run (not from process start — workspace open and lease
+/// work happen first and must not consume the scan's budget). A scan that
+/// cannot finish records a durable capture gap instead of a fabricated
+/// observation. The shell-facing guarantee is different and stronger
+/// (Phase 1.3): the shell integration launches `rewind hook post` in the
+/// background, so the interactive shell never waits for bookkeeping at
+/// all. None of these constants is a promise about the hook process's
+/// total wall time.
 const HOOK_SCAN_DEADLINE_MS: u64 = 50;
-const HOOK_BUDGET_MS: u64 = 150;
+
+/// How long a background post-hook waits for a lease held by another hook
+/// or writer before falling back to the durable bypass marker. Rapid
+/// typing makes consecutive background hooks overlap; the holder releases
+/// within milliseconds, so a short retry avoids spurious reconciliation
+/// gates while still failing closed against genuinely long writers.
+const HOOK_LEASE_RETRY: Duration = Duration::from_millis(2000);
 
 #[derive(Debug, Parser)]
 #[command(
@@ -390,6 +402,12 @@ fn session_id(value: Option<&str>) -> String {
         .unwrap_or_else(|| format!("shell-{}", std::process::id()))
 }
 
+/// Pre-command boundary. Deliberately synchronous and extremely
+/// lightweight: marker discovery, catalog open, and a single INSERT —
+/// never a scan, recovery, CAS, or archive work. A failed pre-hook is
+/// represented safely by absence: no boundary exists, so no observation
+/// can be fabricated for the interval, and the next writer's
+/// reconcile-first pre-scan catches any live drift.
 fn hook_pre(command: &str, session: Option<&str>) -> Result<i32> {
     let workspace = open_workspace()?;
     workspace.storage.catalog.add_boundary(
@@ -402,27 +420,19 @@ fn hook_pre(command: &str, session: Option<&str>) -> Result<i32> {
 }
 
 fn hook_post(exit_code: i32, session: Option<&str>) -> Result<i32> {
-    // The hook must never block the interactive shell for bookkeeping
-    // (Phase 1.2 Fix #1). The total hook budget covers workspace open,
-    // lease acquisition, scan, and persistence; anything that cannot
-    // complete inside the budget fails open with a durable bypass marker,
-    // and the next writer converts that marker into the documented
-    // reconciliation gate. Deferred recovery is deliberately *not* run
+    // Shell-facing responsiveness lives in the shell integration, which
+    // launches this command in the background (Phase 1.3): the interactive
+    // shell never waits for bookkeeping, so this process may take as long
+    // as the work legitimately needs. The only in-process bound is the
+    // bookkeeping scan deadline (HOOK_SCAN_DEADLINE_MS), which starts when
+    // the scan is about to run; a scan that cannot finish becomes a
+    // durable CAPTURE_FAILED/unknown interval — never a fabricated
+    // observation. Deferred transaction recovery is deliberately not run
     // here: finishing a previous transaction is writer work with
-    // unbounded cost, so the hook only records a marker and returns.
-    let started = Instant::now();
-    let budget = Duration::from_millis(HOOK_BUDGET_MS);
-    let deadline = started + Duration::from_millis(HOOK_SCAN_DEADLINE_MS);
+    // unbounded cost, so the hook records a bypass marker and returns
+    // (Phase 1.3 §9; enforced in hook_post_locked).
     let workspace = open_workspace()?;
     let session = session_id(session);
-    if started.elapsed() >= budget {
-        return hook_post_overrun(
-            &workspace,
-            &session,
-            exit_code,
-            "workspace open exceeded budget",
-        );
-    }
     let Some(boundary) = workspace
         .storage
         .catalog
@@ -430,30 +440,26 @@ fn hook_post(exit_code: i32, session: Option<&str>) -> Result<i32> {
     else {
         return Ok(0);
     };
-    let lease = match WorkspaceLease::acquire(&workspace, true) {
-        Ok(lease) => lease,
-        Err(RewindError::LockUnavailable(_)) => {
+    // Overlapping background hooks (rapid typing) serialize on the lease;
+    // the holder releases within milliseconds, so wait briefly before the
+    // conservative bypass fallback. A writer mid-rollback holds the lease
+    // far longer than this and still ends up gated — by design.
+    let lease = match lease_with_retry(&workspace)? {
+        Some(lease) => lease,
+        None => {
             append_bypass_marker(&workspace, &boundary.id)?;
             return Ok(0);
         }
-        Err(error) => return Err(error),
     };
-    if started.elapsed() >= budget {
-        drop(lease);
-        return hook_post_overrun(
-            &workspace,
-            &session,
-            exit_code,
-            "lease acquisition exceeded budget",
-        );
-    }
+    // The scan deadline bounds the scan itself, measured from here.
+    let deadline = Instant::now() + Duration::from_millis(HOOK_SCAN_DEADLINE_MS);
     let result = hook_post_locked(&workspace, &boundary, exit_code, deadline);
     drop(lease);
     match result {
         Ok(code) => Ok(code),
         Err(RewindError::ScanIncomplete(reason)) if reason.contains("deadline") => {
             // The bounded scan did not finish; record the capture gap
-            // durably instead of doing further work in the hook path.
+            // durably instead of fabricating an observation.
             let baseline = workspace.baseline_id().ok();
             let _ = workspace.record_capture_failure(
                 baseline.as_deref(),
@@ -464,35 +470,35 @@ fn hook_post(exit_code: i32, session: Option<&str>) -> Result<i32> {
             );
             Ok(0)
         }
-        Err(error) => Err(error),
+        Err(error) => {
+            // Any other failure (storage, CAS, catalog) must not silently
+            // drop the boundary: leave a durable bypass marker so the next
+            // writer reconciles rather than trusting the interval. If even
+            // the marker fails, the writer's reconcile-first pre-scan still
+            // catches live drift.
+            let _ = append_bypass_marker(&workspace, &boundary.id);
+            Err(error)
+        }
     }
 }
 
-/// Fail-open exit for a passive post-hook whose bookkeeping cannot complete
-/// within the responsiveness budget: a durable bypass marker is recorded so
-/// the next writer must reconcile before trusting anything recorded across
-/// this boundary. The shell never waits for the deferred work.
-fn hook_post_overrun(
-    workspace: &Workspace,
-    session: &str,
-    _exit_code: i32,
-    reason: &str,
-) -> Result<i32> {
-    let _ = session;
-    eprintln!("rewind hook: passive bookkeeping overran budget ({reason}); deferring");
-    let boundary = workspace
-        .storage
-        .catalog
-        .pending_boundary(workspace.id, session)?;
-    if let Some(boundary) = boundary {
-        append_bypass_marker(workspace, &boundary.id)?;
-    } else {
-        // No matching pending boundary (hook_pre may not have run); the
-        // workspace-level bypass is still recorded so the next writer
-        // reconciles rather than trusting a boundary-less interval.
-        append_bypass_marker(workspace, "no-boundary")?;
+/// Retries a nonblocking lease acquisition for `HOOK_LEASE_RETRY` before
+/// giving up. Returns `None` when the lease stays unavailable (the caller
+/// then records the durable bypass marker); errors other than
+/// "lease unavailable" propagate.
+fn lease_with_retry(workspace: &Workspace) -> Result<Option<WorkspaceLease>> {
+    let started = Instant::now();
+    loop {
+        match WorkspaceLease::acquire(workspace, true) {
+            Ok(lease) => return Ok(Some(lease)),
+            Err(RewindError::LockUnavailable(_)) => {}
+            Err(error) => return Err(error),
+        }
+        if started.elapsed() >= HOOK_LEASE_RETRY {
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(100));
     }
-    Ok(0)
 }
 
 fn hook_post_locked(
