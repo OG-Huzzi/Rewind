@@ -358,10 +358,10 @@ fn metadata_fingerprint(metadata: &fs::Metadata) -> MetadataFingerprint {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        return MetadataFingerprint {
+        MetadataFingerprint {
             mode: Some(metadata.permissions().mode() & 0o777),
             readonly: metadata.permissions().readonly(),
-        };
+        }
     }
     #[cfg(not(unix))]
     {
