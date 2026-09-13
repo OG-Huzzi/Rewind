@@ -641,11 +641,8 @@ fn apply_step(
         journal.steps[index].status = JournalStatus::RecoveryRequired;
         workspace.storage.journals.write(journal)?;
         return Err(RewindError::RecoveryRequired(format!(
-            "step {} did not reach expected after state at {}: expected {}, found {}",
-            index,
-            path,
-            desired.describe(),
-            actual_after.describe()
+            "step {} did not reach expected after state at {}: expected {:?}, found {:?}",
+            index, path, desired, actual_after
         )));
     }
     journal.steps[index].status = JournalStatus::Durable;
