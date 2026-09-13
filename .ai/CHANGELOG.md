@@ -120,3 +120,28 @@ Fixes for the Phase 1.2 hardening charter (repo live at
   build, NTFS) — dominated by the per-step full-workspace rescan. The
   Phase 1.2 charter forbids performance redesign; the measurement is
   recorded as the Phase 2 baseline.
+
+## Phase 1.3 — passive hook isolation and final verification
+
+- Shell integration (bash/zsh) launches `rewind hook post` in the
+  background (nohup, detached): the interactive shell returns to the
+  prompt without waiting for scan/CAS/SQLite/recovery/archive work. The
+  pre-hook stays synchronous and lightweight (one boundary INSERT).
+- Removed the false 150 ms total-budget promise (`HOOK_BUDGET_MS`); the
+  only in-process bound is the 50 ms scan deadline, which now starts when
+  the scan begins (a slow workspace open no longer consumes it).
+- Overlapping background hooks retry the writer lease for 2 s before the
+  durable bypass fallback, so rapid typing no longer causes spurious
+  reconciliation gates; a writer mid-rollback still gates.
+- Any hook error records a durable bypass marker before failing; hook
+  process termination leaves at worst an unconsumed boundary; the next
+  writer's reconcile-first pre-scan catches all unobserved drift.
+- New `tests/shell_integration.rs` (6 tests) proves the real user
+  experience: threshold-free ordering proof that the shell exits while a
+  stub 45 s post-hook is still running (bash; zsh where the runner
+  provides it, honest skip otherwise), real-wrapper observation and
+  degradation flows, busy catalog, terminated hook, missing workspace,
+  and unwritable CAS. The old "< 5 s" hook timing assertion was replaced
+  by these behavioral tests.
+- README rewritten as clean UTF-8 (was UTF-16 with a BOM).
+  `.gitattributes` pins LF for shell integration files.

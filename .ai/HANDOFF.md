@@ -1,3 +1,32 @@
+# Phase 1.3 Implementation Handoff
+
+Status: Phase 1.3 (passive hook isolation) complete and CI-verified;
+final verdict in `.ai/PHASE_1_3_FINAL_FOUNDATION_REPORT.md`. Phase 1.2
+and Phase 1.1 handoff content is preserved below unchanged.
+
+## -1. Phase 1.3 nonblocking-hook invariants (do not regress)
+
+- The shell integrations launch `rewind hook post` in the background
+  (nohup, detached, stdio detached). NEVER make the post-hook synchronous
+  again; NEVER let a hook subprocess failure change the command's exit
+  status.
+- The pre-hook stays synchronous and lightweight (marker discovery +
+  catalog open + one INSERT). Do not add scans, recovery, CAS, or
+  archive work to it.
+- `HOOK_BUDGET_MS` is gone and must stay gone: no constant may promise a
+  total wall time for the hook process. The only bound is
+  `HOOK_SCAN_DEADLINE_MS` (50 ms), measured from the start of the scan.
+- `recover_locked` must never run in a hook path; unfinished
+  transactions make the hook record a bypass marker and return.
+- Any hook error records a durable bypass marker before propagating;
+  incomplete background work becomes uncertainty (bypass /
+  CAPTURE_FAILED / unknown interval), never a fabricated operation.
+- `tests/shell_integration.rs` owns the nonblocking proof (stub 45 s
+  post-hook ordering test). Do not replace it with a wall-clock
+  threshold.
+
+---
+
 # Phase 1.2 Implementation Handoff
 
 Status: Phase 1.2 (final foundation hardening) complete and pushed;

@@ -706,7 +706,8 @@ fn unwritable_cas_degrades_to_capture_gap() {
 
     let cas_dir = {
         let workspace = Workspace::open_from_current(root.path()).expect("open workspace");
-        workspace.storage.project_root.join("cas")
+        // The CAS lives under the store root, not the per-project dir.
+        workspace.storage.root.join("cas")
     };
     fs::set_permissions(&cas_dir, fs::Permissions::from_mode(0o555)).expect("lock cas");
 

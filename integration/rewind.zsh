@@ -61,8 +61,10 @@ _rewind_precmd() {
     return 0
 }
 
-if command -v add-zsh-hook >/dev/null 2>&1; then
-    autoload -Uz add-zsh-hook
+# add-zsh-hook must be autoloaded BEFORE it can be detected: an
+# autoloadable function is not yet visible to `command -v` / $functions.
+autoload -Uz add-zsh-hook 2>/dev/null
+if (( $+functions[add-zsh-hook] )); then
     add-zsh-hook preexec _rewind_preexec
     add-zsh-hook precmd _rewind_precmd
 fi

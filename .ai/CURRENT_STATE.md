@@ -1,8 +1,9 @@
 # Current Implementation State
 
-Status: Phase 1.2 (final foundation hardening) implemented, tested, and
-pushed; CI verification on ubuntu/macos/windows(MSVC) — see
-`.ai/PHASE_1_2_HARDENING_REPORT.md` for the recorded verdict.
+Status: Phase 1.3 (passive hook isolation) complete and CI-verified on
+ubuntu/macos/windows(MSVC); final verdict in
+`.ai/PHASE_1_3_FINAL_FOUNDATION_REPORT.md` (Phase 1 CONDITIONALLY
+VERIFIED).
 
 ## Completed
 
@@ -33,9 +34,14 @@ pushed; CI verification on ubuntu/macos/windows(MSVC) — see
     manifests deserializing at `target_kind = unknown`;
   - idempotent journal-authoritative startup repair of committed
     metadata; failed recovery always lands RECOVERY_REQUIRED.
-- Test suite: 30 real-filesystem integration tests (13 foundation +
-  9 rollback_tree + 8 hardening), all portable across Windows/POSIX via
-  `tests/common/mod.rs` script helpers.
+- Phase 1.3 passive-hook isolation: bash/zsh integrations launch the
+  post-hook in the background (shell never waits for bookkeeping); the
+  false 150 ms budget is removed (scan deadline starts at the scan; a 2 s
+  lease retry avoids spurious gates); every hook failure lands in the
+  conservative bypass/CAPTURE_FAILED model.
+- Test suite: 36 real-filesystem integration tests (13 foundation +
+  9 rollback_tree + 8 hardening + 6 shell-integration), all portable
+  across Windows/POSIX via `tests/common/mod.rs` script helpers.
 - Repo hygiene: `.gitignore`; 5195 tracked `target/` artifacts untracked;
   machine-local `.cargo/config.toml` untracked.
 - CI: GitHub Actions (ubuntu-latest, macos-latest, windows-latest MSVC)
@@ -48,8 +54,9 @@ pushed; CI verification on ubuntu/macos/windows(MSVC) — see
 ## Verification status
 
 - Local gates all green on `x86_64-pc-windows-gnu` (Rust 1.98.1).
-- windows-latest (MSVC) CI: passed in full (fmt, check, clippy, 30
-  tests) on the first Phase 1.2 run.
+- CI green on all three platforms (ubuntu, macos, windows/MSVC) for the
+  Phase 1.2 and Phase 1.3 commits; zsh coverage runs on macOS CI and is
+  reported as an honest skip on windows-latest.
 - ubuntu/macos: one POSIX-only clippy warning (`unneeded return` in
   `scan::metadata_fingerprint`, not visible to the Windows-host clippy)
   was surfaced via annotations and fixed; final per-platform results

@@ -1,19 +1,26 @@
 # Phase 1 Test Status
 
-Status after Phase 1.2 (final foundation hardening and cross-platform
-verification). Historical Phase 1.1 status is preserved at the bottom.
+Status after Phase 1.3 (passive hook isolation and final verification).
+Historical Phase 1.1 status is preserved at the bottom.
 
 The suite uses real temporary workspaces, real filesystem mutations, real
 subprocess writers, and real crash simulation. No mocked filesystems.
 
 Passed locally (Rust stable 1.98.1, `x86_64-pc-windows-gnu` host,
-NTFS): 30 integration tests, 0 failed.
+NTFS): 36 integration tests, 0 failed.
 
 - 13 foundation tests (portable command vectors: `.cmd` via `cmd /C` on
   Windows, executable `.sh` on POSIX; CRLF/LF handled by `common::echoed`).
 - 9 rollback_tree tests (V-F01/V-F02 regressions: non-empty/nested tree
   undo and redo, interrupted rollback recovery, external-modification
   refusals, junction classification, archive verification, CLI e2e).
+- 6 shell-integration tests (Phase 1.3, `tests/shell_integration.rs`):
+  the shell wrapper exits while a stub 45 s post-hook is still running
+  (threshold-free ordering proof; bash everywhere, zsh where the runner
+  ships it — windows-latest reports the skip honestly); real-wrapper
+  observation/degradation flows; busy catalog, terminated hook process,
+  missing workspace, and unwritable CAS all fail open and gate the next
+  writer without fabrication.
 - 8 hardening tests (Phase 1.2 fixes, `tests/hardening.rs`):
   - lock owner metadata survives a failed contender (in-process, and
     against a real cross-process `rewind run` writer);
