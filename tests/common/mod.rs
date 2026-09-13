@@ -62,7 +62,7 @@ pub fn create_symlink_if_capable(target: &str, link: &Path) -> bool {
     #[cfg(unix)]
     {
         std::os::unix::fs::symlink(target, link).expect("unix symlink creation");
-        return true;
+        true
     }
     #[cfg(windows)]
     {
