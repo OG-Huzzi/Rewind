@@ -1,0 +1,1 @@
+{"rustc":6001218111239039427,"features":"[]","declared_features":"[\"core\", \"rustc-dep-of-std\"]","target":13840298032947503755,"profile":2241668132362809309,"path":16193496836746316884,"deps":[],"local":[{"CheckDepInfo":{"dep_info":"debug\\.fingerprint\\cfg-if-8a5c4021dce64ca0\\dep-lib-cfg_if","checksum":false}}],"rustflags":[],"config":12038279009223504369,"compile_kind":0}

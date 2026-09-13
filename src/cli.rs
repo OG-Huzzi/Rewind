@@ -1,0 +1,516 @@
+use std::env;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
+use clap::{Args, Parser, Subcommand};
+
+use crate::db::OperationDraft;
+use crate::error::{Result, RewindError};
+use crate::model::{
+    OperationKind, OperationStatus, Reversibility, TrackingConfidence, WorkspaceCondition,
+};
+use crate::rollback::{redo, restore_snapshot, undo};
+use crate::workspace::{state_summary, Workspace, WorkspaceLease};
+
+#[derive(Debug, Parser)]
+#[command(
+    name = "rewind",
+    version,
+    about = "Conservative local workspace recovery"
+)]
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: Command,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum Command {
+    Init(InitArgs),
+    Status,
+    Reconcile,
+    Recover {
+        /// Abandon unclassifiable unfinished transactions after archiving
+        /// their artifacts, then reconcile the live state into a new trusted
+        /// checkpoint. Automatic completion is always attempted first.
+        #[arg(long)]
+        reconcile: bool,
+    },
+    Run {
+        // `last` cannot be combined with `trailing_var_arg` (clap panics on
+        // that combination in debug builds); `trailing_var_arg` alone keeps
+        // `rewind run -- <command...>` and `rewind run <command...>` working.
+        #[arg(trailing_var_arg = true)]
+        command: Vec<String>,
+    },
+    Undo {
+        operation_id: Option<i64>,
+        #[arg(long)]
+        force: bool,
+    },
+    Redo {
+        operation_id: Option<i64>,
+    },
+    List,
+    Show {
+        operation_id: i64,
+    },
+    Diff {
+        operation_id: i64,
+    },
+    Snapshot {
+        name: String,
+    },
+    Restore {
+        name: String,
+    },
+    Doctor,
+    Hook {
+        #[command(subcommand)]
+        command: HookCommand,
+    },
+}
+
+#[derive(Debug, Args)]
+pub struct InitArgs {
+    #[arg(default_value = ".")]
+    pub path: PathBuf,
+    #[arg(long)]
+    pub store: Option<PathBuf>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum HookCommand {
+    Pre {
+        #[arg(long)]
+        command: String,
+        #[arg(long)]
+        session: Option<String>,
+    },
+    Post {
+        #[arg(long)]
+        exit_code: i32,
+        #[arg(long)]
+        session: Option<String>,
+    },
+}
+
+pub fn run(cli: Cli) -> Result<i32> {
+    match cli.command {
+        Command::Init(args) => {
+            let workspace = Workspace::init(&args.path, args.store.as_deref())?;
+            println!("initialized workspace {}", workspace.id);
+            println!("root {}", workspace.root.display());
+            println!("condition {}", workspace.condition()?);
+            Ok(0)
+        }
+        Command::Status => {
+            let workspace = open_workspace()?;
+            let status = workspace.status()?;
+            println!("workspace {}", status.id);
+            println!("root {}", status.root.display());
+            println!("condition {}", status.condition);
+            println!(
+                "baseline {}",
+                status.baseline.unwrap_or_else(|| "NONE".to_owned())
+            );
+            println!("open_unknown {}", status.open_unknown);
+            println!("unfinished_transactions {}", status.unfinished_transactions);
+            Ok(0)
+        }
+        Command::Reconcile => {
+            let workspace = open_workspace()?;
+            let _lease = WorkspaceLease::acquire(&workspace, false)?;
+            crate::rollback::recover_locked(&workspace)?;
+            let state = workspace.reconcile_locked("explicit reconciliation")?;
+            println!("reconciled {state}");
+            Ok(0)
+        }
+        Command::Recover { reconcile } => {
+            let workspace = open_workspace()?;
+            let _lease = WorkspaceLease::acquire(&workspace, false)?;
+            if reconcile {
+                let state = crate::rollback::recover_reconcile(&workspace)?;
+                println!("recovered {state}");
+                return Ok(0);
+            }
+            let unfinished = workspace.storage.journals.unfinished()?;
+            if unfinished.is_empty() {
+                let condition = workspace.condition()?;
+                if matches!(
+                    condition,
+                    WorkspaceCondition::RecoveryRequired | WorkspaceCondition::Degraded
+                ) {
+                    println!("no unfinished transaction; run rewind reconcile");
+                    return Ok(3);
+                }
+                println!("no unfinished transaction; workspace is {condition}");
+                return Ok(0);
+            }
+            match crate::rollback::recover_locked(&workspace) {
+                Ok(()) => {
+                    println!("recovery complete; unfinished transactions resolved");
+                    Ok(0)
+                }
+                Err(error) => {
+                    eprintln!("rewind: automatic recovery failed: {error}");
+                    for line in crate::rollback::diagnose_recoverable(&workspace)? {
+                        println!("{line}");
+                    }
+                    eprintln!(
+                        "rewind: workspace remains RECOVERY_REQUIRED; inspect the \
+                         classification above, then run `rewind recover --reconcile` \
+                         to archive the transaction artifacts, abandon the \
+                         transaction, and reconcile the live state"
+                    );
+                    Ok(3)
+                }
+            }
+        }
+        Command::Run { command } => {
+            let workspace = open_workspace()?;
+            let outcome = workspace.run_command(&command)?;
+            if let Some(error) = &outcome.capture_error {
+                eprintln!("capture failed; reconciliation required: {error}");
+            }
+            if let Some(operation_id) = outcome.operation_id {
+                println!(
+                    "{} operation {}",
+                    if outcome.captured {
+                        "captured"
+                    } else {
+                        "recorded"
+                    },
+                    operation_id
+                );
+            }
+            if outcome.capture_error.is_some() && outcome.exit_code == 0 {
+                Ok(4)
+            } else {
+                Ok(outcome.exit_code)
+            }
+        }
+        Command::Undo {
+            operation_id,
+            force,
+        } => {
+            let workspace = open_workspace()?;
+            let outcome = undo(&workspace, operation_id, force)?;
+            println!(
+                "undo committed transaction {} at state {}",
+                outcome.transaction_id, outcome.target_state_id
+            );
+            Ok(0)
+        }
+        Command::Redo { operation_id } => {
+            let workspace = open_workspace()?;
+            let outcome = redo(&workspace, operation_id)?;
+            println!(
+                "redo committed transaction {} at state {}",
+                outcome.transaction_id, outcome.target_state_id
+            );
+            Ok(0)
+        }
+        Command::List => {
+            let workspace = open_workspace()?;
+            println!("condition {}", workspace.condition()?);
+            for operation in workspace.storage.catalog.list_operations(workspace.id)? {
+                println!(
+                    "#{id} {kind} {status} {confidence} {reversibility} {command}",
+                    id = operation.id,
+                    kind = operation.kind.as_str(),
+                    status = operation.status.as_str(),
+                    confidence = operation.confidence.as_str(),
+                    reversibility = operation.reversibility.as_str(),
+                    command = operation.command.unwrap_or_default()
+                );
+            }
+            Ok(0)
+        }
+        Command::Show { operation_id } => {
+            let workspace = open_workspace()?;
+            let operation = workspace
+                .storage
+                .catalog
+                .operation(operation_id, workspace.id)?;
+            println!("{}", serde_json::to_string_pretty(&operation)?);
+            Ok(0)
+        }
+        Command::Diff { operation_id } => {
+            let workspace = open_workspace()?;
+            let operation = workspace
+                .storage
+                .catalog
+                .operation(operation_id, workspace.id)?;
+            for effect in operation.effects {
+                println!(
+                    "{} {} {} -> {}",
+                    effect.effect_type.as_str(),
+                    effect.path,
+                    effect.pre.describe(),
+                    effect.post.describe()
+                );
+            }
+            Ok(0)
+        }
+        Command::Snapshot { name } => {
+            let workspace = open_workspace()?;
+            let state = workspace.create_snapshot(&name)?;
+            println!("snapshot {name} {state}");
+            Ok(0)
+        }
+        Command::Restore { name } => {
+            let workspace = open_workspace()?;
+            let outcome = restore_snapshot(&workspace, &name)?;
+            println!(
+                "restore committed transaction {} at state {}",
+                outcome.transaction_id, outcome.target_state_id
+            );
+            Ok(0)
+        }
+        Command::Doctor => doctor(),
+        Command::Hook { command } => passive_hook(command),
+    }
+}
+
+fn open_workspace() -> Result<Workspace> {
+    Workspace::open_from_current(&env::current_dir()?)
+}
+
+fn doctor() -> Result<i32> {
+    let workspace = open_workspace()?;
+    workspace.enforce_pending_safety_gate()?;
+    let status = workspace.status()?;
+    let mut result = 0;
+    println!("workspace {}", status.id);
+    println!("condition {}", status.condition);
+    let integrity = workspace.storage.catalog.integrity_check()?;
+    println!("catalog {integrity}");
+    if integrity != "ok" {
+        result = 3;
+    }
+    match WorkspaceLease::acquire(&workspace, true) {
+        Ok(lease) => drop(lease),
+        Err(error) => {
+            println!("writer_lock unavailable: {error}");
+            result = 3;
+        }
+    }
+    if let Some(baseline) = status.baseline {
+        let state = workspace.storage.catalog.state(&baseline)?;
+        let (files, directories, unsupported) = state_summary(&state.manifest);
+        println!(
+            "baseline {} files={} directories={} unsupported={}",
+            baseline, files, directories, unsupported
+        );
+        for fingerprint in state.manifest.entries.values() {
+            if let crate::model::Fingerprint::RegularFile { content_hash, .. } = fingerprint {
+                workspace.storage.cas.verify(content_hash)?;
+            }
+        }
+        let live = workspace.scan(None)?;
+        if live.state_id != baseline {
+            println!(
+                "baseline_drift expected={} observed={}",
+                baseline, live.state_id
+            );
+            result = 3;
+        }
+    }
+    for (id, state, journal) in workspace
+        .storage
+        .catalog
+        .unfinished_transactions(workspace.id)?
+    {
+        println!("unfinished transaction {id} {state} {journal}");
+        result = 3;
+    }
+    for (_path, journal) in workspace.storage.journals.pending_archives()? {
+        println!(
+            "archive_pending transaction={} status={:?} error={}",
+            journal.transaction_id,
+            journal.archive_status,
+            journal.archive_error.unwrap_or_default()
+        );
+    }
+    if status.condition != WorkspaceCondition::Healthy {
+        match status.condition {
+            WorkspaceCondition::RecoveryRequired => {
+                println!(
+                    "action: run `rewind recover` to classify the unfinished \
+                     transaction; if it cannot be completed safely, run \
+                     `rewind recover --reconcile`"
+                );
+            }
+            _ => {
+                println!("action: run rewind reconcile before normal capture or rollback");
+            }
+        }
+        result = 3;
+    }
+    println!(
+        "platform {}",
+        if cfg!(windows) {
+            "windows"
+        } else if cfg!(target_os = "macos") {
+            "macos"
+        } else {
+            "linux-or-posix"
+        }
+    );
+    Ok(result)
+}
+
+fn passive_hook(command: HookCommand) -> Result<i32> {
+    let result = match command {
+        HookCommand::Pre { command, session } => hook_pre(&command, session.as_deref()),
+        HookCommand::Post { exit_code, session } => hook_post(exit_code, session.as_deref()),
+    };
+    match result {
+        Ok(code) => Ok(code),
+        Err(error) => {
+            eprintln!("rewind hook diagnostic: {error}");
+            Ok(0)
+        }
+    }
+}
+
+fn session_id(value: Option<&str>) -> String {
+    value
+        .map(str::to_owned)
+        .or_else(|| env::var("REWIND_SESSION_ID").ok())
+        .unwrap_or_else(|| format!("shell-{}", std::process::id()))
+}
+
+fn hook_pre(command: &str, session: Option<&str>) -> Result<i32> {
+    let workspace = open_workspace()?;
+    workspace.storage.catalog.add_boundary(
+        workspace.id,
+        &session_id(session),
+        command,
+        &workspace.root.to_string_lossy(),
+    )?;
+    Ok(0)
+}
+
+fn hook_post(exit_code: i32, session: Option<&str>) -> Result<i32> {
+    let workspace = open_workspace()?;
+    let session = session_id(session);
+    let Some(boundary) = workspace
+        .storage
+        .catalog
+        .pending_boundary(workspace.id, &session)?
+    else {
+        return Ok(0);
+    };
+    let lease = match WorkspaceLease::acquire(&workspace, true) {
+        Ok(lease) => lease,
+        Err(RewindError::LockUnavailable(_)) => {
+            append_bypass_marker(&workspace, &boundary.id)?;
+            return Ok(0);
+        }
+        Err(error) => return Err(error),
+    };
+    let result = hook_post_locked(&workspace, &boundary, exit_code);
+    drop(lease);
+    result
+}
+
+fn hook_post_locked(
+    workspace: &Workspace,
+    boundary: &crate::db::BoundaryRow,
+    exit_code: i32,
+) -> Result<i32> {
+    crate::rollback::recover_locked(workspace)?;
+    workspace
+        .storage
+        .catalog
+        .finish_boundary(&boundary.id, exit_code)?;
+    workspace.enforce_pending_safety_gate()?;
+    if workspace.condition()? != WorkspaceCondition::Healthy {
+        let baseline = workspace.row()?.baseline_state;
+        workspace.storage.catalog.insert_operation(
+            workspace.id,
+            &OperationDraft {
+                kind: OperationKind::BoundaryOnly,
+                status: OperationStatus::Untrusted,
+                pre_state_id: baseline,
+                post_state_id: None,
+                command: Some(boundary.command.clone()),
+                cwd: Some(boundary.cwd.clone()),
+                exit_code: Some(exit_code),
+                confidence: TrackingConfidence::Degraded,
+                reversibility: Reversibility::Unavailable,
+                error: Some("workspace requires reconciliation".to_owned()),
+                effects: Vec::new(),
+            },
+        )?;
+        return Ok(0);
+    }
+    let baseline = workspace.baseline_id()?;
+    let deadline = Instant::now() + Duration::from_millis(50);
+    let scan = match workspace.scan(Some(deadline)) {
+        Ok(scan) => scan,
+        Err(error) => {
+            workspace.record_capture_failure(
+                Some(&baseline),
+                Some(boundary.command.clone()),
+                Some(boundary.cwd.clone()),
+                Some(exit_code),
+                &error.to_string(),
+            )?;
+            return Ok(0);
+        }
+    };
+    let post_state = workspace.persist_state(
+        crate::model::StateKind::Observation,
+        &scan,
+        Some(&baseline),
+        Some("passive-observation"),
+    )?;
+    let before = workspace.state_manifest(&baseline)?;
+    let effects = crate::scan::diff_manifests(&before, &scan.manifest);
+    workspace.storage.catalog.insert_operation(
+        workspace.id,
+        &OperationDraft {
+            kind: OperationKind::PassiveObservation,
+            status: OperationStatus::Completed,
+            pre_state_id: Some(baseline),
+            post_state_id: Some(post_state.clone()),
+            command: Some(boundary.command.clone()),
+            cwd: Some(boundary.cwd.clone()),
+            exit_code: Some(exit_code),
+            confidence: TrackingConfidence::LowConfidenceObservation,
+            reversibility: Reversibility::Unavailable,
+            error: None,
+            effects,
+        },
+    )?;
+    workspace.storage.catalog.set_workspace(
+        workspace.id,
+        &WorkspaceCondition::Healthy,
+        Some(&post_state),
+    )?;
+    Ok(0)
+}
+
+fn append_bypass_marker(workspace: &Workspace, boundary_id: &str) -> Result<()> {
+    let path = workspace.storage.project_root.join("boundaries.log");
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    writeln!(
+        file,
+        "{{\"boundary\":\"{}\",\"kind\":\"BYPASS_PENDING\",\"pid\":{}}}",
+        boundary_id,
+        std::process::id()
+    )?;
+    file.sync_all()?;
+    if let Err(error) = workspace
+        .storage
+        .catalog
+        .add_bypass_marker(workspace.id, boundary_id)
+    {
+        eprintln!("rewind hook diagnostic: durable database bypass marker unavailable: {error}");
+    }
+    Ok(())
+}

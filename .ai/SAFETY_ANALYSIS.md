@@ -1,0 +1,126 @@
+# RewindUndo Safety and Threat Analysis
+
+Status: Phase 0.7 synchronized; analysis only
+
+## 1. Safety doctrine
+
+Rewind should preserve user control by refusing an operation when the required
+state, path, metadata, lock, or recovery evidence is not available. This is a
+design objective under the assumptions in the Phase 1 contract, not a promise
+against every filesystem, hardware, kernel, or external-process failure.
+
+## 2. Primary defenses
+
+| Risk | Defense | Refusal condition |
+| --- | --- | --- |
+| Failed capture leaves disk beyond baseline | CAPTURE_FAILED, UNKNOWN_INTERVAL, reconciliation gate | No normal attribution or undo across the gap |
+| Out-of-band edit during undo | Per-step source/destination fingerprint checks | CONFLICT before overwrite |
+| Process/power interruption | External journal and physical state-map recovery | RECOVERY_REQUIRED if state is unknown |
+| External trash on another volume | Same-filesystem local quarantine; external post-commit archive | No critical cross-device rename |
+| Symlink/junction escape | No-follow scan, descriptor/handle confinement, reparse refusal | SECURITY_CONFLICT or UNSUPPORTED_OBJECT |
+| CAS mutation | Independent artifact copies; no hardlinks as CAS snapshots | Storage-corruption refusal |
+| Concurrent Rewind writers | Workspace writer lease | Busy/refusal |
+| Windows open handle | Sharing-aware preflight and apply | Sharing violation/refusal |
+| Unsupported metadata | Explicit category classification | Partial or refusal, not exact restore |
+| Missing path | ABSENT fingerprint | Type/state conflict if unexpected |
+
+## 3. Degradation and unknown interval
+
+The last baseline pointer is not sufficient evidence after a post-capture
+failure. A failed capture records the boundary and enters DEGRADED, then
+RECONCILIATION_REQUIRED once the marker is durable. Passive hooks can continue
+to report boundaries for the shell, but those boundaries are untrusted and do
+not advance the baseline.
+
+Reconciliation scans the actual filesystem and creates a trusted checkpoint.
+It records the interval as unknown rather than attributing it to the next
+command. Undo, redo, and exact diff across that interval are unavailable.
+
+## 4. Rollback threats
+
+### 4.1 Before mutation
+
+The anchor, external journal intent, desired artifacts, local staging, and
+writer lease must be ready before live movement. If any preparation step fails,
+the workspace is unchanged by Rewind and the transaction is not committed.
+
+### 4.2 During movement
+
+A step may move an old entry to local quarantine, install a prepared entry, or
+perform a platform-specific replacement. The journal records APPLYING before
+the mutation. Recovery inspects all endpoints; it does not trust a stale
+APPLIED flag.
+
+### 4.3 After movement
+
+The workspace result is not committed until the complete after-map is observed,
+relevant flushes are requested, and the state is rechecked. External archival
+may still be pending after the live transaction commits.
+
+### 4.4 Unknown state
+
+If any endpoint matches neither the documented before nor after state, or
+cannot be read, recovery enters RECOVERY_REQUIRED. It does not overwrite the
+object merely because the intended target is known.
+
+## 5. Path and object safety
+
+The workspace root is explicit. Relative paths are normalized, case-collision
+checked according to the volume, and confined to the selected root. Symlinks
+are state objects, not traversal shortcuts. Windows junctions and unclassified
+reparse points are unsupported. Linux openat/openat2 capabilities are used
+where available; macOS and Windows use their own descriptor/handle checks and
+refuse weaker cases.
+
+FIFOs, sockets, and device nodes are classified without reading their contents.
+Phase 1 does not create, delete, or restore them.
+
+## 6. Metadata safety
+
+Exact guarantees cover only categories marked TRACKED. Permissions and
+read-only/executable attributes are platform-scoped partial categories.
+Timestamps are not content proof. ACLs, extended attributes, alternate data
+streams, and unverified ownership are unsupported for exact restore. If an
+operation depends on one of those categories, the CLI reports partial
+reversibility or refuses the operation.
+
+## 7. Storage safety
+
+CAS ingestion writes an independent temporary artifact, hashes it, flushes it,
+and publishes it only after verification. Hardlinks are not used for immutable
+CAS objects. A disk-full or I/O error leaves the operation uncaptured and
+opens the degradation gate if the command may already have run.
+
+The external store is not assumed to be on the same filesystem as the
+workspace. Its loss or unavailability is a storage failure, not evidence that
+the workspace is unchanged.
+
+## 8. Concurrency safety
+
+The writer lease serializes Rewind capture commits, reconciliation, rollback,
+redo, restore, and startup recovery. Hooks that fail to obtain a non-blocking
+lease append a pending bypass marker when the external boundary log is
+available; the next writer boundary requires reconciliation. An IDE or other
+process can still write; per-step checks detect target divergence.
+
+## 9. Platform safety
+
+Linux and macOS POSIX rename operations are single-entry same-filesystem
+namespace operations, not multi-file commits. Windows ReplaceFileW is a
+regular-file API with sharing and metadata rules, not a POSIX directory
+primitive. Directory replacement, locks, reparse points, and flush behavior
+are separately classified in the capability matrix.
+
+## 10. User-facing safety outcomes
+
+The safe outcomes are explicit:
+
+- success with a committed supported transition;
+- successful command with CAPTURE_FAILED and reconciliation required;
+- conflict/refusal before live mutation;
+- committed live rollback with ARCHIVE_PENDING external archival;
+- RECOVERY_REQUIRED with no further mutation;
+- unsupported/partial result with the exact unsupported category.
+
+The system must not translate these outcomes into a generic “completed”
+message.
