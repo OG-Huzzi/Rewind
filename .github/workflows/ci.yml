@@ -55,7 +55,7 @@ jobs:
           status=$?
           cat test-output.txt
           if [ "$status" -ne 0 ]; then
-            sed 's/\x1b\[[0-9;]*m//g' test-output.txt | grep -E 'FAILED|panicked at' | head -40 | while read -r line; do
+            sed 's/\x1b\[[0-9;]*m//g' test-output.txt | grep -A3 'panicked at' | head -60 | while read -r line; do
               printf '::error title=test::%s\n' "${line:0:220}"
             done
           fi
