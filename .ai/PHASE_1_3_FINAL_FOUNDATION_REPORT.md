@@ -157,12 +157,26 @@ No new performance SLA was invented.
 
 ## 8. CI results (GitHub Actions, OG-Huzzi/Rewind)
 
-Final run for commit 2afbb7b (Phase 1.3 code): **ubuntu-latest,
+Final run for commit badf17d (Phase 1.3 code complete): **ubuntu-latest,
 macos-latest, windows-latest (MSVC) — all success** (fmt, check, clippy
--D warnings, full test suite per platform). Zsh ran on macOS; zsh's
+-D warnings, full 36-test suite per platform). Zsh ran on macOS; zsh's
 absence on windows-latest is reported by the test itself via an honest
-skip note. Docs commit ff398ff-branch runs also green (see repository
-Actions history; run ids recorded in the commit timeline).
+skip note.
+
+CI again did real verification work on the way there (same pattern as
+Phase 1.2 — POSIX behavior is invisible from the Windows host):
+
+- 2afbb7b: windows ✓; ubuntu/macos ✗ — two genuine POSIX-only test
+  defects surfaced: (1) the zsh integration registered its hooks through
+  `command -v add-zsh-hook` *before* autoloading it, but an autoloadable
+  function is invisible to `command -v`, so the hooks silently never
+  registered on macOS (the test's missing pre-sentinel caught it); (2)
+  the unwritable-CAS test locked the wrong directory (`project_root/cas`
+  instead of the store-root CAS).
+- c71642e: windows ✓; ubuntu/macos ✗ — the CAS test locked `cas` itself,
+  but blob staging happens in `cas/tmp`, whose own permissions still
+  allowed writes; the scan legitimately succeeded.
+- badf17d: all three platforms green.
 
 ## 9. 38-scenario matrix — affected scenarios re-verified
 
