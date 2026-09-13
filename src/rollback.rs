@@ -742,11 +742,24 @@ fn apply_metadata(path: &Path, fingerprint: &Fingerprint) -> Result<()> {
     };
     let mut permissions = fs::metadata(path)?.permissions();
     #[cfg(unix)]
-    if let Some(mode) = metadata.mode {
+    {
         use std::os::unix::fs::PermissionsExt;
-        permissions.set_mode(mode);
+        // The recorded mode is authoritative on Unix. `readonly` is the
+        // Windows representation of writability; on Unix it must only ever
+        // *clear* write bits — `set_readonly(false)` ORs 0o222 into the
+        // mode, which would corrupt a restored 0o644 into 0o666.
+        if let Some(mode) = metadata.mode {
+            let mut mode = mode;
+            if metadata.readonly {
+                mode &= !0o222;
+            }
+            permissions.set_mode(mode);
+        }
     }
-    permissions.set_readonly(metadata.readonly);
+    #[cfg(not(unix))]
+    {
+        permissions.set_readonly(metadata.readonly);
+    }
     fs::set_permissions(path, permissions)?;
     Ok(())
 }
