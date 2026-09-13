@@ -704,12 +704,14 @@ fn unwritable_cas_degrades_to_capture_gap() {
     // A new file forces a fresh CAS blob write during the post-hook scan.
     fs::write(root.path().join("hooked.txt"), b"hooked").expect("hooked file");
 
-    let cas_dir = {
+    let cas_tmp_dir = {
         let workspace = Workspace::open_from_current(root.path()).expect("open workspace");
-        // The CAS lives under the store root, not the per-project dir.
-        workspace.storage.root.join("cas")
+        // put_file stages new blobs through the CAS temp directory; its own
+        // permissions (not the parent's) govern whether a new blob can be
+        // written at all.
+        workspace.storage.root.join("cas").join("tmp")
     };
-    fs::set_permissions(&cas_dir, fs::Permissions::from_mode(0o555)).expect("lock cas");
+    fs::set_permissions(&cas_tmp_dir, fs::Permissions::from_mode(0o555)).expect("lock cas tmp");
 
     let session = format!("cas-{}", std::process::id());
     let pre = cli(
@@ -732,7 +734,7 @@ fn unwritable_cas_degrades_to_capture_gap() {
         String::from_utf8_lossy(&post.stderr)
     );
 
-    fs::set_permissions(&cas_dir, fs::Permissions::from_mode(0o755)).expect("unlock cas");
+    fs::set_permissions(&cas_tmp_dir, fs::Permissions::from_mode(0o755)).expect("unlock cas tmp");
 
     let workspace = Workspace::open_from_current(root.path()).expect("reopen workspace");
     assert_eq!(
