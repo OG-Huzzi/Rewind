@@ -154,7 +154,7 @@ fn undo_and_redo_of_nonempty_directory_creation() {
     assert_eq!(tree_child_count(&root), TREE_FILES);
     assert_eq!(
         fs::read(root.join("tree").join("f3.txt")).expect("redo child content"),
-        b"data-3\r\n"
+        common::echoed("data-3")
     );
     assert_eq!(condition(&fixture.workspace), WorkspaceCondition::Healthy);
 }
@@ -665,13 +665,14 @@ fn archive_of_quarantined_file_succeeds_and_staging_is_cleaned() {
                         .join("archive")
                         .join(journal.transaction_id.to_string())
                         .join(step.id.to_string());
-                    // The undo quarantined "B\r\n" (the post-state bytes) and
-                    // the archive must hold exactly those bytes. The local
-                    // quarantine copy no longer exists: successful archival
-                    // disposes of the transaction staging.
+                    // The undo quarantined the post-state bytes (shell line
+                    // ending per platform) and the archive must hold exactly
+                    // those bytes. The local quarantine copy no longer
+                    // exists: successful archival disposes of the transaction
+                    // staging.
                     assert_eq!(
                         fs::read(&destination).expect("archived artifact"),
-                        b"B\r\n",
+                        common::echoed("B"),
                         "archived bytes must match the quarantined post-state"
                     );
                 }
