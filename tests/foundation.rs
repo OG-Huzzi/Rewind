@@ -95,7 +95,7 @@ fn deletion_creation_and_type_replacement_restore_both_directions() {
     redo(&workspace, created.operation_id).expect("redo creation");
     assert_eq!(
         fs::read_to_string(root.path().join("new.txt")).expect("recreated file"),
-        "N\r\n"
+        String::from_utf8(common::echoed("N")).expect("utf8")
     );
 
     fs::write(root.path().join("foo.txt"), b"A").expect("recreate source");
@@ -146,7 +146,7 @@ fn directory_child_mutation_does_not_quarantine_the_parent_directory() {
     redo(&workspace, outcome.operation_id).expect("redo child creation");
     assert_eq!(
         fs::read_to_string(root.path().join("empty/new.txt")).expect("redo child"),
-        "child\r\n"
+        String::from_utf8(common::echoed("child")).expect("utf8")
     );
 }
 
