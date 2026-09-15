@@ -57,6 +57,21 @@ pub struct BoundaryRow {
     pub consumed: bool,
 }
 
+/// One recorded unknown interval: a span of history whose causal and state
+/// evidence is not trustworthy. Phase 2 planning treats an interval that
+/// intersects a rollback closure as a hard boundary and must be able to name
+/// it; the boolean `has_open_unknown` cannot.
+#[derive(Clone, Debug)]
+pub struct UnknownIntervalRow {
+    pub id: i64,
+    pub start_state_id: Option<String>,
+    pub end_state_id: Option<String>,
+    pub reason: String,
+    pub is_open: bool,
+    pub created_at: i64,
+    pub closed_at: Option<i64>,
+}
+
 const BOUNDARY_COLUMNS: &str =
     "id, session_id, command, cwd, started_at, ended_at, exit_code, consumed";
 
@@ -454,6 +469,34 @@ impl Catalog {
             |row| row.get(0),
         )?;
         Ok(count > 0)
+    }
+    /// Every unknown interval recorded for this workspace, ordered by
+    /// `(created_at, id)` so the sequence is deterministic.
+    ///
+    /// Read-only: this is part of the Phase 2 planning surface and must never
+    /// be called from a path that mutates the workspace.
+    pub fn unknown_intervals(&self, workspace_id: Uuid) -> Result<Vec<UnknownIntervalRow>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT id, start_state_id, end_state_id, reason, is_open, created_at, closed_at
+             FROM unknown_intervals WHERE workspace_id=?1 ORDER BY created_at, id",
+        )?;
+        let mapped = statement.query_map(params![workspace_id.to_string()], |row| {
+            Ok(UnknownIntervalRow {
+                id: row.get(0)?,
+                start_state_id: row.get(1)?,
+                end_state_id: row.get(2)?,
+                reason: row.get(3)?,
+                is_open: row.get::<_, i64>(4)? != 0,
+                created_at: row.get(5)?,
+                closed_at: row.get(6)?,
+            })
+        })?;
+        let mut intervals = Vec::new();
+        for interval in mapped {
+            intervals.push(interval?);
+        }
+        Ok(intervals)
     }
 
     pub fn add_bypass_marker(&self, workspace_id: Uuid, boundary_id: &str) -> Result<()> {
