@@ -121,6 +121,42 @@ Fixes for the Phase 1.2 hardening charter (repo live at
   Phase 1.2 charter forbids performance redesign; the measurement is
   recorded as the Phase 2 baseline.
 
+## Phase 2 - dependency-aware inspection
+
+Contract: `.ai/PHASE_2_DEPENDENCY_AWARE_INSPECTION.md`.
+
+- Read-only `Catalog::unknown_intervals` returning typed `UnknownIntervalRow`
+  rows ordered by `(created_at, id)`. No schema change: the crate has no
+  migration mechanism, so a new column or table would silently not apply to
+  existing catalogs.
+- `ScanOptions { ingest }` with `Workspace::observe`: the same manifest and
+  `state_id` as `scan`, computed without writing anything into the CAS. `Default`
+  keeps ingestion on, so every Phase 1 capture path is unchanged.
+- `src/depgraph.rs`: a derived dependency graph over recorded history. Nodes are
+  existing operation/state/boundary ids. Three typed evidence kinds - state
+  lineage (Known: entailed by a shared content hash), effect overlap and temporal
+  ordering (Advisory: correlations that never widen a closure). Cycles are
+  detected, reported rotated to their smallest node, and never broken. Evidence
+  that cannot be evaluated is recorded, so "could not tell" is never reported as
+  "no dependency".
+- `src/plan.rs`: safety-first multi-select rollback planning. Targets are
+  validated with the Phase 1 eligibility predicates, the closure is computed on
+  known lineage order, and refusal is a value - ten structured conflicts and ten
+  block reasons carrying the durable ids that caused them. An open unknown
+  interval blocks unconditionally. `plan::execute` re-plans, refuses stale plans
+  and drives the existing Phase 1 undo/redo engine.
+- CLI: `inspect graph`, `inspect history`, `plan rollback` (all read-only, with
+  `--json`) and a separate `apply rollback`. Exit 0 when executable, 3 when
+  refused, 1 on error.
+- `src/ui.rs` (`rewind ui`): the minimum read-only interactive surface. `parse`
+  and `render` are pure, so it is testable without a terminal; the mutating verbs
+  are refused by construction, so it cannot decide or execute anything.
+- Tests: 25 new (13 unit + 12 integration), covering closure order, refusal
+  conditions, determinism under shuffled input, zero mutation during planning and
+  execution through the Phase 1 engine. Full suite 76 passed / 0 failed.
+- Verdict: **PHASE 2 NOT VERIFIED** pending CI. See
+  `.ai/PHASE_2_VERIFICATION_REPORT.md`.
+
 ## Phase 1.4 — passive boundary identity and final verification
 - Post-CI follow-ups: `06cb33b` (the 50 ms scan deadline now starts immediately
   before the scan; the observation-path tests assert both branches; the report's

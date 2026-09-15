@@ -499,3 +499,74 @@ fn the_interactive_surface_answers_over_stdin_and_executes_nothing() {
         "the surface must never execute anything"
     );
 }
+
+#[test]
+fn a_capture_failed_operation_in_the_closure_blocks_the_plan() {
+    let root = tempfile::tempdir().expect("workspace root");
+    let store = tempfile::tempdir().expect("store");
+    let scratch = tempfile::tempdir().expect("scratch");
+    let workspace = two_command_workspace(&root, &store, &scratch);
+
+    let baseline = workspace.baseline_id().expect("baseline");
+    workspace
+        .record_capture_failure(Some(&baseline), None, None, None, "test gap")
+        .expect("record gap");
+
+    let ids = operation_ids(&workspace);
+    let plan = plan_rollback(&workspace, &[RollbackTarget::undo(ids[1])]).expect("plan");
+    assert!(!plan.is_executable());
+    assert!(
+        plan.block_reasons
+            .iter()
+            .any(|reason| matches!(reason, BlockReason::NotReversible { .. })),
+        "a CAPTURE_FAILED operation cannot be undone and must block: {:?}",
+        plan.block_reasons
+    );
+    assert!(
+        plan.unknowns
+            .iter()
+            .any(|unknown| unknown.evidence == EvidenceKind::EffectOverlap),
+        "a kind that records no effects must be reported as missing evidence"
+    );
+}
+
+#[test]
+fn duplicate_targets_collapse_to_one_plan() {
+    let root = tempfile::tempdir().expect("workspace root");
+    let store = tempfile::tempdir().expect("store");
+    let scratch = tempfile::tempdir().expect("scratch");
+    let workspace = two_command_workspace(&root, &store, &scratch);
+
+    let ids = operation_ids(&workspace);
+    let once = plan_rollback(&workspace, &[RollbackTarget::undo(ids[0])]).expect("plan");
+    let twice = plan_rollback(
+        &workspace,
+        &[
+            RollbackTarget::undo(ids[0]),
+            RollbackTarget::undo(ids[0]),
+            RollbackTarget::undo(ids[0]),
+        ],
+    )
+    .expect("plan");
+    assert_eq!(once.order, twice.order, "duplicate targets are one target");
+    assert_eq!(twice.targets.len(), 1);
+    assert_eq!(
+        once.to_json().expect("json"),
+        twice.to_json().expect("json")
+    );
+}
+
+#[test]
+fn a_data_only_workspace_plans_nothing_and_errors_on_no_targets() {
+    let root = tempfile::tempdir().expect("workspace root");
+    let store = tempfile::tempdir().expect("store");
+    let workspace = Workspace::init(root.path(), Some(store.path())).expect("init");
+
+    // Empty history: the graph is empty and no operation can be planned.
+    let graph = DependencyGraph::build(&workspace).expect("graph");
+    assert!(graph.edges.is_empty());
+    assert!(graph.cycles.is_empty());
+
+    let error = plan_rollback(&workspace, &[]).expect_err("no targets must be an error");
+    assert!(matches!(error, RewindError::InvalidCommand(_)));
+}

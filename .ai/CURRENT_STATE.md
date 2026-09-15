@@ -1,8 +1,11 @@
 # Current Implementation State
 
 Status: Phase 1.4 (passive boundary identity) complete and CI-verified
-(run #19 on `4b5dddb`: ubuntu, macOS and windows all green); final verdict in
+(run #19 on `4b5dddb`: ubuntu, macOS and windows all green); Phase 1 verdict in
 `.ai/PHASE_1_4_BOUNDARY_CORRELATION_REPORT.md` (**Phase 1 VERIFIED**).
+Phase 2 (dependency-aware inspection) is implemented and locally green but has
+not been pushed, so it is not yet CI-verified: see
+`.ai/PHASE_2_VERIFICATION_REPORT.md` (**Phase 2 NOT VERIFIED** pending CI).
 
 ## Completed
 
@@ -51,6 +54,9 @@ Status: Phase 1.4 (passive boundary identity) complete and CI-verified
 - Phase 1.4 CI is green for `4b5dddb` (run #19: ubuntu, macOS, windows/MSVC).
   The two preceding revisions had failed on macOS, and `b69817d` also on
   windows; see the Phase 1.4 report section 11 for the per-platform results.
+- Phase 2 local gates are green on `x86_64-pc-windows-gnu`: fmt, check, clippy
+  (-D warnings) and the full suite, 76 passed / 0 failed (Phase 1's 48 unchanged
+  plus 25 new Phase 2 tests). CI has not run for any Phase 2 commit.
 - zsh coverage runs where zsh is available (macOS/Linux CI) and reports an
   honest skip on windows-latest.
 
