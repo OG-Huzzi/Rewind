@@ -315,3 +315,31 @@ commits are pushed and green, the verdict stays as written.
 
 No Phase 3, 4 or 5 functionality was introduced. No Phase 1 invariant was
 weakened.
+
+---
+
+## 14. Review
+
+The review was attempted by an independent agent twice; both attempts failed on
+infrastructure (the first lost its execution context, the second failed its
+model request), so no independent review artefact exists. That requirement is
+recorded here as **UNMET**, not as passed.
+
+In place of it, the four load-bearing claims were re-checked directly against the
+source, with the lines quoted. This is AutoCoder's own verification and is
+therefore **not** an independent review; it is recorded as such.
+
+| Claim | Evidence | Result |
+| --- | --- | --- |
+| Only state lineage produces `Known` | `src/depgraph.rs:87-88` | holds |
+| `reaches_known` cannot traverse an advisory edge | `src/depgraph.rs:431` | holds |
+| The closure comes from operation order, not from advisory edges | `src/plan.rs:217` (`sort_by_key(|o| (o.created_at, o.id))`), `src/plan.rs:327` | holds |
+| An open unknown interval blocks unconditionally | `src/plan.rs:387` (`filter(|interval| interval.is_open)`) | holds |
+| `execute` re-plans and refuses a stale plan before mutating | `src/plan.rs:567-568`, then `src/plan.rs:578` | holds |
+| `observe` hashes without writing to the CAS; `Default` still ingests | `src/scan.rs:148-151`, `src/scan.rs:35`, `src/scan.rs:45`, `src/workspace.rs:270` | holds |
+| `src/ui.rs` contains no mutating call | zero matches for `plan::execute`, `rollback::`, `.scan(`, `insert_`, `set_workspace`, `open_unknown`, `run_command`; `src/ui.rs:98` refuses the mutating verbs | holds |
+
+**Outstanding for a genuine independent review:** a second person (or a working
+review agent) should re-read `.ai/PHASE_2_DEPENDENCY_AWARE_INSPECTION.md` and
+README this package, and record a pass/fail per contract obligation with an
+evidence link.
