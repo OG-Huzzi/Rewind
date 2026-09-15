@@ -190,6 +190,40 @@ fn boundaries(workspace: &Workspace) -> Vec<rewind::db::BoundaryRow> {
         .expect("boundaries")
 }
 
+/// A durable conservative trace: the workspace is gated away from HEALTHY, or
+/// a bypass marker / open unknown interval is pending. This is the
+/// representation the Phase 1.3 degradation model promises *instead of* a
+/// fabricated observation, so accepting it is not a relaxation of the test:
+/// `hook_post_locked` gates on exactly `condition != HEALTHY`.
+fn conservative_trace(workspace: &Workspace) -> bool {
+    condition(workspace) != WorkspaceCondition::Healthy
+        || workspace
+            .storage
+            .catalog
+            .has_pending_bypass(workspace.id)
+            .expect("bypass")
+        || workspace
+            .storage
+            .catalog
+            .has_open_unknown(workspace.id)
+            .expect("gap")
+}
+
+/// Background bookkeeping has *settled* for `expected` commands when every one
+/// of them left a passive observation, or the workspace shows the durable
+/// conservative trace instead.
+///
+/// Waiting on the boundaries being `consumed` is not enough: `consumed` is set
+/// when a post-hook *claims* its boundary, which happens before the scan and
+/// before either representation is written. On a slow runner the claim is
+/// already visible while the hook is still legitimately mid-flight, so a test
+/// that waits only for `consumed` can judge an interval the product has not
+/// finished representing yet. This is what failed
+/// `bash_rapid_commands_keep_command_identity` on macOS in CI runs #17/#18.
+fn bookkeeping_settled(workspace: &Workspace, expected: usize) -> bool {
+    conservative_trace(workspace) || observation_count(workspace) >= expected
+}
+
 /// Phase 1.4: the pre-hook prints the boundary's immutable id on stdout;
 /// tests capture it and always hand exactly that id to the post-hook.
 fn pre_hook_id(bin: &str, store: &Path, root: &Path, command: &str, session: &str) -> String {
@@ -933,13 +967,13 @@ fn rapid_commands_keep_command_identity(shell: &str) {
 
     let workspace = Workspace::open_from_current(root.path()).expect("open workspace");
     let expected: [(&str, i32); 3] = [("a.txt", 0), ("b.txt", 9), ("c.txt", 5)];
+    // Wait for the bookkeeping to settle rather than merely for the boundaries
+    // to be claimed (see `bookkeeping_settled`): `consumed` becomes true when a
+    // post-hook claims its boundary, before the observation or the durable
+    // conservative trace is written.
     let deadline = Instant::now() + BACKGROUND_COMPLETION_LIMIT;
     loop {
-        let consumed = boundaries(&workspace)
-            .iter()
-            .filter(|row| row.consumed)
-            .count();
-        if consumed >= expected.len() || Instant::now() >= deadline {
+        if bookkeeping_settled(&workspace, expected.len()) || Instant::now() >= deadline {
             break;
         }
         std::thread::sleep(Duration::from_millis(200));
@@ -1030,17 +1064,7 @@ fn rapid_commands_keep_command_identity(shell: &str) {
          verifying the conservative trace instead",
         observation_count(&workspace)
     );
-    let gated = condition(&workspace) == WorkspaceCondition::ReconciliationRequired
-        || workspace
-            .storage
-            .catalog
-            .has_pending_bypass(workspace.id)
-            .expect("bypass")
-        || workspace
-            .storage
-            .catalog
-            .has_open_unknown(workspace.id)
-            .expect("gap");
+    let gated = conservative_trace(&workspace);
     assert!(
         gated,
         "a missing observation must leave a durable conservative trace"
