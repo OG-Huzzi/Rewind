@@ -76,6 +76,11 @@ fn observe_never_ingests_objects_into_the_cas() {
 mod common;
 
 use rewind::depgraph::{DependencyGraph, EdgeConfidence, EvidenceKind, NodeId};
+use rewind::error::RewindError;
+use rewind::model::WorkspaceCondition;
+use rewind::plan::{
+    execute, plan_rollback, BlockReason, IncludedReason, RollbackConflict, RollbackTarget,
+};
 
 #[test]
 fn lineage_edges_from_real_history_are_known() {
@@ -131,5 +136,286 @@ fn lineage_edges_from_real_history_are_known() {
     assert_eq!(
         graph.to_json().expect("json"),
         rebuilt.to_json().expect("json")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 planning
+// ---------------------------------------------------------------------------
+
+/// Every file under `root`, as `relative-path:length`, sorted. Used to prove a
+/// code path did not touch the user's workspace.
+fn tree_snapshot(root: &Path) -> Vec<String> {
+    fn walk(root: &Path, current: &Path, into: &mut Vec<String>) {
+        let Ok(entries) = fs::read_dir(current) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let relative = path
+                .strip_prefix(root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .into_owned();
+            if path.is_dir() {
+                into.push(format!("{relative}/"));
+                walk(root, &path, into);
+            } else {
+                let length = entry.metadata().map(|meta| meta.len()).unwrap_or(0);
+                into.push(format!("{relative}:{length}"));
+            }
+        }
+    }
+    let mut entries = Vec::new();
+    walk(root, root, &mut entries);
+    entries.sort();
+    entries
+}
+
+/// Two recorded strong captures on a fresh workspace, with the script files kept
+/// outside the workspace so the state chain stays unbroken.
+fn two_command_workspace(
+    root: &tempfile::TempDir,
+    store: &tempfile::TempDir,
+    scratch: &tempfile::TempDir,
+) -> Workspace {
+    let workspace = Workspace::init(root.path(), Some(store.path())).expect("init");
+    for content in ["one", "two"] {
+        let argv = common::shell_script(
+            scratch.path(),
+            content,
+            &format!("echo {content}> {content}.txt"),
+            &format!("echo {content} > {content}.txt"),
+        );
+        workspace.run_command(&argv).expect("supervised command");
+    }
+    workspace
+}
+
+fn operation_ids(workspace: &Workspace) -> Vec<i64> {
+    let mut ids: Vec<i64> = workspace
+        .storage
+        .catalog
+        .list_operations(workspace.id)
+        .expect("operations")
+        .into_iter()
+        .map(|operation| operation.id)
+        .collect();
+    ids.sort_unstable();
+    ids
+}
+
+#[test]
+fn planning_never_touches_the_workspace_or_the_cas() {
+    let root = tempfile::tempdir().expect("workspace root");
+    let store = tempfile::tempdir().expect("store");
+    let scratch = tempfile::tempdir().expect("scratch");
+    let workspace = two_command_workspace(&root, &store, &scratch);
+
+    let workspace_before = tree_snapshot(root.path());
+    let cas_before = blob_names(&store.path().join("cas"));
+
+    let targets = vec![RollbackTarget::undo(operation_ids(&workspace)[0])];
+    let plan = plan_rollback(&workspace, &targets).expect("plan");
+    assert!(
+        plan.is_executable(),
+        "a clean two-command history must plan: {:?}",
+        plan.block_reasons
+    );
+
+    assert_eq!(
+        tree_snapshot(root.path()),
+        workspace_before,
+        "planning must not change the user's workspace"
+    );
+    // Note: the SQLite catalog is opened through its WAL, which may create
+    // sidecar files in the store. The CAS object set is the durable claim.
+    assert_eq!(
+        blob_names(&store.path().join("cas")),
+        cas_before,
+        "planning must not ingest objects into the CAS"
+    );
+}
+
+#[test]
+fn one_undo_target_plans_the_whole_newer_suffix_newest_first() {
+    let root = tempfile::tempdir().expect("workspace root");
+    let store = tempfile::tempdir().expect("store");
+    let scratch = tempfile::tempdir().expect("scratch");
+    let workspace = two_command_workspace(&root, &store, &scratch);
+
+    let ids = operation_ids(&workspace);
+    assert_eq!(ids.len(), 2);
+
+    let plan = plan_rollback(&workspace, &[RollbackTarget::undo(ids[0])]).expect("plan");
+    assert!(plan.is_executable(), "{:?}", plan.block_reasons);
+    assert_eq!(
+        plan.order.len(),
+        2,
+        "undoing the older operation must also undo the newer one"
+    );
+    assert_eq!(
+        plan.order[0].operation_id, ids[1],
+        "the newest operation is undone first"
+    );
+    assert_eq!(
+        plan.order[0].reason,
+        IncludedReason::RequiredBy {
+            operation_id: ids[0]
+        }
+    );
+    assert_eq!(plan.order[1].operation_id, ids[0]);
+    assert_eq!(plan.order[1].reason, IncludedReason::Selected);
+    assert!(plan.complete, "no unknown evidence on this history");
+}
+
+#[test]
+fn a_plan_is_deterministic() {
+    let root = tempfile::tempdir().expect("workspace root");
+    let store = tempfile::tempdir().expect("store");
+    let scratch = tempfile::tempdir().expect("scratch");
+    let workspace = two_command_workspace(&root, &store, &scratch);
+
+    let targets = vec![RollbackTarget::undo(operation_ids(&workspace)[0])];
+    let first = plan_rollback(&workspace, &targets).expect("plan");
+    let second = plan_rollback(&workspace, &targets).expect("plan");
+    assert_eq!(
+        first.to_json().expect("json"),
+        second.to_json().expect("json")
+    );
+}
+
+#[test]
+fn an_open_unknown_interval_refuses_the_plan() {
+    let root = tempfile::tempdir().expect("workspace root");
+    let store = tempfile::tempdir().expect("store");
+    let scratch = tempfile::tempdir().expect("scratch");
+    let workspace = two_command_workspace(&root, &store, &scratch);
+
+    let baseline = workspace.baseline_id().expect("baseline");
+    workspace
+        .record_capture_failure(Some(&baseline), None, None, None, "test gap")
+        .expect("record gap");
+
+    let targets = vec![RollbackTarget::undo(operation_ids(&workspace)[0])];
+    let plan = plan_rollback(&workspace, &targets).expect("plan");
+    assert!(
+        !plan.is_executable(),
+        "an open unknown interval must refuse"
+    );
+    assert!(
+        plan.block_reasons
+            .iter()
+            .any(|reason| matches!(reason, BlockReason::UnknownInterval { .. })),
+        "the plan must name the unknown interval: {:?}",
+        plan.block_reasons
+    );
+}
+
+#[test]
+fn a_refused_plan_executes_nothing() {
+    let root = tempfile::tempdir().expect("workspace root");
+    let store = tempfile::tempdir().expect("store");
+    let scratch = tempfile::tempdir().expect("scratch");
+    let workspace = two_command_workspace(&root, &store, &scratch);
+
+    let baseline = workspace.baseline_id().expect("baseline");
+    workspace
+        .record_capture_failure(Some(&baseline), None, None, None, "test gap")
+        .expect("record gap");
+
+    let targets = vec![RollbackTarget::undo(operation_ids(&workspace)[0])];
+    let plan = plan_rollback(&workspace, &targets).expect("plan");
+    assert!(!plan.is_executable());
+
+    let before = tree_snapshot(root.path());
+    let error = execute(&workspace, &plan).expect_err("refused plan must not execute");
+    assert!(matches!(error, RewindError::ConditionBlocked(_)));
+    assert_eq!(
+        tree_snapshot(root.path()),
+        before,
+        "a refused plan must not touch the workspace"
+    );
+    assert!(root.path().join("one.txt").exists());
+    assert!(root.path().join("two.txt").exists());
+}
+
+#[test]
+fn an_approved_plan_executes_through_the_phase_1_engine() {
+    let root = tempfile::tempdir().expect("workspace root");
+    let store = tempfile::tempdir().expect("store");
+    let scratch = tempfile::tempdir().expect("scratch");
+    let workspace = two_command_workspace(&root, &store, &scratch);
+
+    let ids = operation_ids(&workspace);
+    let plan = plan_rollback(&workspace, &[RollbackTarget::undo(ids[1])]).expect("plan");
+    assert!(plan.is_executable(), "{:?}", plan.block_reasons);
+
+    let outcomes = execute(&workspace, &plan).expect("execute");
+    assert_eq!(outcomes.len(), 1);
+    assert_eq!(
+        outcomes[0].operation_id,
+        Some(ids[1]),
+        "the Phase 1 engine records the transaction it committed"
+    );
+    assert!(
+        !root.path().join("two.txt").exists(),
+        "undo restores the pre-state of the selected operation"
+    );
+    assert!(
+        root.path().join("one.txt").exists(),
+        "unrelated work survives"
+    );
+    assert_eq!(
+        workspace.condition().expect("condition"),
+        WorkspaceCondition::Healthy,
+        "the workspace returns to HEALTHY through the Phase 1 commit path"
+    );
+}
+
+#[test]
+fn a_stale_plan_is_refused() {
+    let root = tempfile::tempdir().expect("workspace root");
+    let store = tempfile::tempdir().expect("store");
+    let scratch = tempfile::tempdir().expect("scratch");
+    let workspace = two_command_workspace(&root, &store, &scratch);
+
+    let ids = operation_ids(&workspace);
+    let plan = plan_rollback(&workspace, &[RollbackTarget::undo(ids[1])]).expect("plan");
+    assert!(plan.is_executable());
+
+    // History moves on after the plan was built.
+    let argv = common::shell_script(
+        scratch.path(),
+        "three",
+        "echo three> three.txt",
+        "echo three > three.txt",
+    );
+    workspace.run_command(&argv).expect("supervised command");
+
+    let error = execute(&workspace, &plan).expect_err("a stale plan must be refused");
+    assert!(matches!(error, RewindError::ConditionBlocked(_)));
+    assert!(root.path().join("three.txt").exists());
+}
+
+#[test]
+fn an_already_undone_operation_is_not_an_eligible_target() {
+    let root = tempfile::tempdir().expect("workspace root");
+    let store = tempfile::tempdir().expect("store");
+    let scratch = tempfile::tempdir().expect("scratch");
+    let workspace = two_command_workspace(&root, &store, &scratch);
+
+    let ids = operation_ids(&workspace);
+    rewind::rollback::undo(&workspace, Some(ids[1]), false).expect("first undo");
+
+    let plan = plan_rollback(&workspace, &[RollbackTarget::undo(ids[1])]).expect("plan");
+    assert!(!plan.is_executable());
+    assert!(
+        plan.conflicts.iter().any(|conflict| matches!(
+            conflict,
+            RollbackConflict::TargetNotEligible { operation_id, .. } if *operation_id == ids[1]
+        )),
+        "the plan must say why the target is not eligible: {:?}",
+        plan.conflicts
     );
 }
