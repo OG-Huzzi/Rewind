@@ -967,13 +967,26 @@ fn rapid_commands_keep_command_identity(shell: &str) {
 
     let workspace = Workspace::open_from_current(root.path()).expect("open workspace");
     let expected: [(&str, i32); 3] = [("a.txt", 0), ("b.txt", 9), ("c.txt", 5)];
-    // Wait for the bookkeeping to settle rather than merely for the boundaries
-    // to be claimed (see `bookkeeping_settled`): `consumed` becomes true when a
-    // post-hook claims its boundary, before the observation or the durable
-    // conservative trace is written.
+    // Wait until the bookkeeping has BOTH claimed every boundary and settled
+    // its representation. Neither fact is sufficient on its own:
+    //
+    // * `consumed` alone becomes true when a post-hook claims its boundary,
+    //   before the observation or the durable conservative trace is written -
+    //   so a loop that waits only for that judges an unfinished interval on a
+    //   slow runner (CI runs #17/#18);
+    // * settlement alone can be reached by one hook's degradation while
+    //   another hook has not claimed yet - so a loop that waits only for that
+    //   fails the identity assertion below (CI run #22).
     let deadline = Instant::now() + BACKGROUND_COMPLETION_LIMIT;
     loop {
-        if bookkeeping_settled(&workspace, expected.len()) || Instant::now() >= deadline {
+        let claimed = boundaries(&workspace)
+            .iter()
+            .filter(|row| row.consumed)
+            .count()
+            >= expected.len();
+        if (claimed && bookkeeping_settled(&workspace, expected.len()))
+            || Instant::now() >= deadline
+        {
             break;
         }
         std::thread::sleep(Duration::from_millis(200));

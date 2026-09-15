@@ -370,3 +370,36 @@ there rather than argued away locally.
 
 **Run #19** (`4b5dddb`) and **run #20** (`aff0dbb`) were both green on all three
 platforms; these are the Phase 1.4 verification and its documentation commit.
+### Run #22 follow-up (the wait loop needed both facts, not one)
+
+**Run #22** (commit `445094f`, the shebang fix): **ubuntu-latest failed again;
+macos-latest and windows-latest passed.** The failure moved to
+`tests/shell_integration.rs:999` — *"b.txt must be accounted for by its own
+post-hook"* — i.e. a boundary had not been claimed when the identity assertions
+ran.
+
+**Cause.** The wait loop introduced for runs #17/#18 waited for the bookkeeping
+to *settle* but no longer required every boundary to be *claimed*. Settlement can
+appear from one hook's degradation — a bypass marker turns the workspace to
+RECONCILIATION_REQUIRED and counts as a durable conservative trace — while
+another hook has not claimed yet. The loop could therefore exit early, and the
+unconditional identity assertion that follows then failed. Claiming and settling
+are independent facts and the test needs both.
+
+**Fix.** The loop now waits for **both**: every expected boundary consumed **and**
+the representation settled. That condition is strictly stronger than either one
+alone, so it can only wait longer, never shorter.
+
+**Local evidence.** `bash` was not on this host's `PATH`, so every earlier local
+run of this test *skipped* it and proved nothing — an error in my own reporting
+that this note corrects. With Git for Windows added to `PATH`:
+
+- the previously failing test passes 3/3 in isolation (2.3-2.7 s, no skip);
+- the whole `shell_integration` suite passes 8/8 in 50 s with bash active;
+- the full suite passes **76/76** with bash active (fmt/check/clippy clean).
+
+**Counterfactual: not reproduced.** Restoring the run-#22 loop and running the
+test 6 times did not fail locally (0/6). The race needs a loaded runner, so this
+is an evidence gap rather than a confirmation. The fix is kept on the strength of
+the code-level mechanism (a settle-only exit can precede a claim) and because the
+new condition is monotone in waiting.
