@@ -256,13 +256,16 @@ objects from an empty directory, and D7 above.
 5. If CI is required for the revert, push and confirm run green on all three
    platforms.
 
-**Trigger authority:** the repository owner. **Expected duration:** under five
-minutes locally (the test suite dominates); one CI cycle if CI evidence is
-required. **Exercised:** not exercised end-to-end — the revert deletes files and
-running it would remove the Phase 2 working tree; the equivalent check that the
-revert lands on a green Phase 1 state is the 48-test Phase 1 suite, which passes
-on the current tree minus Phase 2 files. This is recorded as an unexercised
-step rather than claimed as tested.
+**Trigger authority:** the repository owner. **Expected duration:** the revert
+itself took one second in a scratch clone; verification dominates (the full
+suite runs in a few minutes). **Exercised: yes, end-to-end** on 2026-09-15 in a
+scratch clone of the repository at `2fd0bf8`: `git revert --no-commit
+aff0dbb..HEAD`, committed as one revert commit (`c4a4830` in that clone). The
+revert removed 3,529 lines across 15 files (`src/depgraph.rs`, `src/plan.rs`,
+`src/ui.rs`, `tests/phase2_dependency.rs` and the CLI/API additions), and the
+full suite on the reverted tree returned exactly the Phase 1 count: **48
+passed, 0 failed**. Phase 2 is additive by construction; this is the executed
+proof.
 
 **Recovery of the workspace under rollback (product-level):** `rewind recover`
 for a completable unfinished transaction, `rewind recover --reconcile` only when
