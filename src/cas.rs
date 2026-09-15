@@ -81,6 +81,22 @@ impl Cas {
         }
         Ok(hash)
     }
+    /// Hash a file exactly as `put_file` would, without storing anything.
+    /// Phase 2 planning uses this so that reading the live state can never
+    /// ingest an object into the store.
+    pub fn hash_file(&self, source: &Path) -> Result<String> {
+        let mut input = File::open(source)?;
+        let mut hasher = blake3::Hasher::new();
+        let mut buffer = [0_u8; 128 * 1024];
+        loop {
+            let count = input.read(&mut buffer)?;
+            if count == 0 {
+                break;
+            }
+            hasher.update(&buffer[..count]);
+        }
+        Ok(hasher.finalize().to_hex().to_string())
+    }
 
     pub fn put_bytes(&self, bytes: &[u8]) -> Result<String> {
         let hash = blake3::hash(bytes).to_hex().to_string();

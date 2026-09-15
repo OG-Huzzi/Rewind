@@ -257,7 +257,18 @@ impl Workspace {
     }
 
     pub fn scan(&self, deadline: Option<Instant>) -> Result<ScanResult> {
-        scan_workspace(&self.root, &self.storage.cas, ScanOptions { deadline })
+        scan_workspace(&self.root, &self.storage.cas, ScanOptions::ingest(deadline))
+    }
+    /// Read-only counterpart of [`Workspace::scan`]: it computes the same
+    /// manifest and `state_id`, but ingests nothing into the CAS. Phase 2
+    /// planning uses this so that constructing or validating a plan cannot
+    /// mutate the store.
+    pub fn observe(&self, deadline: Option<Instant>) -> Result<ScanResult> {
+        scan_workspace(
+            &self.root,
+            &self.storage.cas,
+            ScanOptions::observe(deadline),
+        )
     }
 
     pub fn persist_state(

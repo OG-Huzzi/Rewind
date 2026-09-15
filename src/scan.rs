@@ -19,9 +19,40 @@ pub struct ScanResult {
     pub unsupported_paths: Vec<String>,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct ScanOptions {
     pub deadline: Option<Instant>,
+    /// When false the scan hashes objects but never writes them to the CAS.
+    /// Phase 2 planning is side-effect free and uses this; every Phase 1
+    /// capture path keeps the default `true`.
+    pub ingest: bool,
+}
+
+impl Default for ScanOptions {
+    fn default() -> Self {
+        Self {
+            deadline: None,
+            ingest: true,
+        }
+    }
+}
+
+impl ScanOptions {
+    /// A scan that ingests new objects into the CAS (every Phase 1 capture path).
+    pub fn ingest(deadline: Option<Instant>) -> Self {
+        Self {
+            deadline,
+            ingest: true,
+        }
+    }
+
+    /// A scan that only reads: objects are hashed but nothing is stored.
+    pub fn observe(deadline: Option<Instant>) -> Self {
+        Self {
+            deadline,
+            ingest: false,
+        }
+    }
 }
 
 pub fn scan_workspace(root: &Path, cas: &Cas, options: ScanOptions) -> Result<ScanResult> {
@@ -114,7 +145,11 @@ fn visit_directory(
                 false,
             )?
         } else if file_type.is_file() {
-            let hash = cas.put_file(&path)?;
+            let hash = if options.ingest {
+                cas.put_file(&path)?
+            } else {
+                cas.hash_file(&path)?
+            };
             let after_metadata = fs::symlink_metadata(&path).map_err(|error| {
                 RewindError::ScanIncomplete(format!("{}: {error}", path.display()))
             })?;
