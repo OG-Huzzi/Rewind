@@ -154,8 +154,11 @@ Contract: `.ai/PHASE_2_DEPENDENCY_AWARE_INSPECTION.md`.
 - Tests: 25 new (13 unit + 12 integration), covering closure order, refusal
   conditions, determinism under shuffled input, zero mutation during planning and
   execution through the Phase 1 engine. Full suite 76 passed / 0 failed.
-- Verdict: **PHASE 2 NOT VERIFIED** pending CI. See
-  `.ai/PHASE_2_VERIFICATION_REPORT.md`.
+- CI: run #23 on `4d89a2f` is green on ubuntu-latest, macos-latest and
+  windows-latest. Runs #21 and #22 failed on ubuntu only and each was fixed at
+  the root: a missing POSIX shebang in the new tests, then a wait loop that had
+  to require both claiming and settlement.
+- Verdict: **PHASE 2 VERIFIED**. See `.ai/PHASE_2_VERIFICATION_REPORT.md`.
 
 ## Phase 1.4 — passive boundary identity and final verification
 - Post-CI follow-ups: `06cb33b` (the 50 ms scan deadline now starts immediately

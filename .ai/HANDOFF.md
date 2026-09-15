@@ -3,9 +3,10 @@
 Status: Phase 1.4 (passive boundary identity) complete and CI-verified
 (run #19 on `4b5dddb`: ubuntu, macOS and windows all green); final verdict in
 `.ai/PHASE_1_4_BOUNDARY_CORRELATION_REPORT.md`. **Phase 1 is VERIFIED.**
-Phase 2 (dependency-aware inspection) is implemented and locally green but not
-pushed: see `.ai/PHASE_2_VERIFICATION_REPORT.md` for its contract, evidence and
-verdict. Phase 1.3 and earlier handoff content is preserved below unchanged.
+Phase 2 (dependency-aware inspection) is implemented and CI-verified (run #23 on
+`4d89a2f`: ubuntu, macOS and windows all green): see
+`.ai/PHASE_2_VERIFICATION_REPORT.md` for its contract, evidence and verdict.
+Phase 1.3 and earlier handoff content is preserved below unchanged.
 
 ## -2. Phase 1.4 boundary-identity invariants (do not regress)
 

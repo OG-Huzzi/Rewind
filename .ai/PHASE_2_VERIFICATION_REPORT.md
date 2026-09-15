@@ -1,13 +1,13 @@
 # Phase 2 — Dependency-Aware Inspection: Verification Report
 
-Status: implementation complete against the Phase 2 contract; **local gates
-green; CI not yet run for any Phase 2 commit.**
+Status: implementation complete against the Phase 2 contract; **CI green on
+ubuntu-latest, macos-latest and windows-latest for the pushed commit.**
 
-**Verdict: PHASE 2 NOT VERIFIED.** Every local requirement is met and every
-artifact exists, but the charter's completion standard (§18, §21) requires green
-CI on ubuntu-latest, macos-latest and windows-latest **for the exact pushed
-commit**, and Phase 2 has not been pushed. Local Windows results alone never
-justify "Phase 2 verified".
+**Verdict: PHASE 2 VERIFIED.** The charter's completion standard (§18, §21) -
+green CI on all three platforms for the exact pushed commit - is met by run #23
+on `4d89a2f` (ubuntu 1m26s, macOS 1m32s, windows 4m03s; zero non-success check
+runs). Three CI rounds were needed and each round's finding is recorded in
+section 15.
 
 ---
 
@@ -300,18 +300,23 @@ classification fails — unchanged from Phase 1 and still the only documented ex
 
 ## 13. Verdict
 
-**PHASE 2 NOT VERIFIED.**
+**PHASE 2 VERIFIED.**
 
 Local gates: `cargo fmt --all -- --check` PASS, `cargo check --all-targets
 --all-features` PASS, `cargo clippy --all-targets --all-features -- -D warnings`
-PASS, `cargo test --all-targets --all-features` **76 passed / 0 failed**. Live
+PASS, `cargo test --all-targets --all-features` **76 passed / 0 failed** (with
+`bash` on `PATH`, so the shell-integration tests ran rather than skipped). Live
 walkthroughs of every new command, including the refusal and error paths, were
-performed on scratch workspaces.
+performed on scratch workspaces, and the rollback runbook was exercised in a
+scratch clone.
 
-The single remaining gap is CI. The charter requires the final verification to
-be against the exact pushed commit on all three platforms, and explicitly
-forbids declaring Phase 2 verified on local Windows results. Until the Phase 2
-commits are pushed and green, the verdict stays as written.
+CI: **run #23** on `4d89a2f` passed on ubuntu-latest, macos-latest and
+windows-latest with zero non-success check runs. This is the evidence the
+verdict rests on.
+
+Open items that are not part of the technical verdict: an independent review
+(attempted twice, failed on infrastructure; section 14) and the requester's
+sign-off on the frozen artifact set.
 
 No Phase 3, 4 or 5 functionality was introduced. No Phase 1 invariant was
 weakened.
@@ -403,3 +408,7 @@ test 6 times did not fail locally (0/6). The race needs a loaded runner, so this
 is an evidence gap rather than a confirmation. The fix is kept on the strength of
 the code-level mechanism (a settle-only exit can precede a claim) and because the
 new condition is monotone in waiting.
+**Run #23** (commit `4d89a2f`, the both-facts wait): **ubuntu-latest,
+macos-latest and windows-latest all success** - ubuntu 1m26s, macOS 1m32s,
+windows 4m03s, zero non-success check runs on the commit. This is the CI evidence
+the charter requires and the run the Phase 2 verdict rests on.
