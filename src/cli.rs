@@ -7,10 +7,12 @@ use std::time::{Duration, Instant};
 use clap::{Args, Parser, Subcommand};
 
 use crate::db::OperationDraft;
+use crate::depgraph::{DependencyGraph, EdgeConfidence, NodeId};
 use crate::error::{Result, RewindError};
 use crate::model::{
     OperationKind, OperationStatus, Reversibility, TrackingConfidence, WorkspaceCondition,
 };
+use crate::plan::{self, IncludedReason, PlanDecision, RollbackPlan, RollbackTarget};
 use crate::rollback::{redo, restore_snapshot, undo};
 use crate::workspace::{state_summary, Workspace, WorkspaceLease};
 
@@ -85,6 +87,18 @@ pub enum Command {
         name: String,
     },
     Doctor,
+    Inspect {
+        #[command(subcommand)]
+        command: InspectCommand,
+    },
+    Plan {
+        #[command(subcommand)]
+        command: PlanCommand,
+    },
+    Apply {
+        #[command(subcommand)]
+        command: ApplyCommand,
+    },
     Hook {
         #[command(subcommand)]
         command: HookCommand,
@@ -115,6 +129,57 @@ pub enum HookCommand {
         boundary: String,
         #[arg(long)]
         exit_code: i32,
+    },
+}
+
+/// Read-only inspection of recorded history (Phase 2). Takes no writer lease
+/// and mutates nothing.
+#[derive(Debug, Subcommand)]
+pub enum InspectCommand {
+    /// The dependency graph over recorded history.
+    Graph {
+        /// Emit JSON: the interface of record for machine consumers.
+        #[arg(long)]
+        json: bool,
+        /// Restrict the output to the edges incident to one operation.
+        #[arg(long)]
+        operation: Option<i64>,
+    },
+    /// Recorded operations, oldest first.
+    History {
+        #[arg(long)]
+        json: bool,
+        /// Show only the newest N operations.
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+}
+
+/// Rollback planning (Phase 2). This command never mutates: it reports what a
+/// rollback would do and whether it is permitted.
+#[derive(Debug, Subcommand)]
+pub enum PlanCommand {
+    Rollback {
+        #[arg(long = "undo")]
+        undo_ids: Vec<i64>,
+        #[arg(long = "redo")]
+        redo_ids: Vec<i64>,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+/// Execution of a re-validated plan (Phase 2). Kept separate from planning so
+/// that no plan can be produced and executed in one unexamined step.
+#[derive(Debug, Subcommand)]
+pub enum ApplyCommand {
+    Rollback {
+        #[arg(long = "undo")]
+        undo_ids: Vec<i64>,
+        #[arg(long = "redo")]
+        redo_ids: Vec<i64>,
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -291,6 +356,9 @@ pub fn run(cli: Cli) -> Result<i32> {
             );
             Ok(0)
         }
+        Command::Inspect { command } => inspect(command),
+        Command::Plan { command } => plan_command(command),
+        Command::Apply { command } => apply(command),
         Command::Doctor => doctor(),
         Command::Hook { command } => passive_hook(command),
     }
@@ -298,6 +366,270 @@ pub fn run(cli: Cli) -> Result<i32> {
 
 fn open_workspace() -> Result<Workspace> {
     Workspace::open_from_current(&env::current_dir()?)
+}
+
+fn inspect(command: InspectCommand) -> Result<i32> {
+    let workspace = open_workspace()?;
+    match command {
+        InspectCommand::Graph { json, operation } => inspect_graph(&workspace, json, operation),
+        InspectCommand::History { json, limit } => inspect_history(&workspace, json, limit),
+    }
+}
+
+/// Render the dependency graph. Read-only.
+fn inspect_graph(workspace: &Workspace, json: bool, operation: Option<i64>) -> Result<i32> {
+    let graph = DependencyGraph::build(workspace)?;
+    if json {
+        match operation {
+            Some(id) => {
+                let node = NodeId::operation(id);
+                let view = serde_json::json!({
+                    "workspace_id": graph.workspace_id,
+                    "node": node.as_text(),
+                    "incident": graph.incident(&node),
+                });
+                println!("{}", serde_json::to_string_pretty(&view)?);
+            }
+            None => println!("{}", graph.to_json()?),
+        }
+        return Ok(0);
+    }
+
+    println!("workspace {}", graph.workspace_id);
+    println!(
+        "nodes {}  edges {}  cycles {}  incomplete {}",
+        graph.nodes.len(),
+        graph.edges.len(),
+        graph.cycles.len(),
+        graph.incomplete.len()
+    );
+    let filter = operation.map(NodeId::operation);
+    let selected: Vec<_> = graph
+        .edges
+        .iter()
+        .filter(|edge| match &filter {
+            Some(node) => &edge.from == node || &edge.to == node,
+            None => true,
+        })
+        .collect();
+    for (title, confidence) in [
+        (
+            "known (entailed by recorded identity)",
+            EdgeConfidence::Known,
+        ),
+        (
+            "advisory (correlation only, never acted on)",
+            EdgeConfidence::Advisory,
+        ),
+    ] {
+        println!();
+        println!("{title}");
+        let mut printed = false;
+        for edge in selected.iter().filter(|edge| edge.confidence == confidence) {
+            printed = true;
+            let support = if edge.support.is_empty() {
+                String::new()
+            } else {
+                format!(" via {}", edge.support.join(", "))
+            };
+            println!(
+                "  {} -> {}  [{}]{}",
+                edge.from,
+                edge.to,
+                edge.evidence.as_str(),
+                support
+            );
+        }
+        if !printed {
+            println!("  (none)");
+        }
+    }
+    if filter.is_none() && !graph.incomplete.is_empty() {
+        println!();
+        println!("incomplete evidence (unknown, not \"no dependency\")");
+        for record in &graph.incomplete {
+            println!(
+                "  operation {}  {}  {}",
+                record.operation_id,
+                record.evidence.as_str(),
+                record.detail
+            );
+        }
+    }
+    if !graph.cycles.is_empty() {
+        println!();
+        println!("cycles (reported, never broken)");
+        for cycle in &graph.cycles {
+            let text: Vec<String> = cycle.iter().map(|node| node.as_text()).collect();
+            println!("  {}", text.join(" -> "));
+        }
+    }
+    Ok(0)
+}
+
+/// List recorded operations. Read-only.
+fn inspect_history(workspace: &Workspace, json: bool, limit: Option<usize>) -> Result<i32> {
+    let mut operations = workspace.storage.catalog.list_operations(workspace.id)?;
+    operations.sort_by_key(|operation| (operation.created_at, operation.id));
+    let limit = limit.unwrap_or(50);
+    if operations.len() > limit {
+        operations.drain(..operations.len() - limit);
+    }
+    if json {
+        println!("{}", serde_json::to_string_pretty(&operations)?);
+        return Ok(0);
+    }
+    for operation in &operations {
+        println!(
+            "{:>5}  {:<19} {:<10} {:<26} {:<17} {}",
+            operation.id,
+            operation.kind.as_str(),
+            operation.status.as_str(),
+            operation.confidence.as_str(),
+            operation.reversibility.as_str(),
+            operation
+                .command
+                .clone()
+                .unwrap_or_else(|| "<no command>".to_owned())
+        );
+    }
+    Ok(0)
+}
+
+fn collect_targets(undo_ids: Vec<i64>, redo_ids: Vec<i64>) -> Vec<RollbackTarget> {
+    let mut targets: Vec<RollbackTarget> = undo_ids.into_iter().map(RollbackTarget::undo).collect();
+    targets.extend(redo_ids.into_iter().map(RollbackTarget::redo));
+    targets
+}
+
+fn plan_command(command: PlanCommand) -> Result<i32> {
+    let workspace = open_workspace()?;
+    match command {
+        PlanCommand::Rollback {
+            undo_ids,
+            redo_ids,
+            json,
+        } => {
+            let targets = collect_targets(undo_ids, redo_ids);
+            let plan = plan::plan_rollback(&workspace, &targets)?;
+            if json {
+                println!("{}", plan.to_json()?);
+            } else {
+                print_plan(&plan);
+            }
+            Ok(if plan.is_executable() { 0 } else { 3 })
+        }
+    }
+}
+
+fn apply(command: ApplyCommand) -> Result<i32> {
+    let workspace = open_workspace()?;
+    match command {
+        ApplyCommand::Rollback {
+            undo_ids,
+            redo_ids,
+            json,
+        } => {
+            let targets = collect_targets(undo_ids, redo_ids);
+            let plan = plan::plan_rollback(&workspace, &targets)?;
+            if !plan.is_executable() {
+                if json {
+                    println!("{}", plan.to_json()?);
+                } else {
+                    print_plan(&plan);
+                }
+                return Ok(3);
+            }
+            let outcomes = plan::execute(&workspace, &plan)?;
+            if json {
+                let view: Vec<serde_json::Value> = outcomes
+                    .iter()
+                    .map(|outcome| {
+                        serde_json::json!({
+                            "transaction_id": outcome.transaction_id.to_string(),
+                            "operation_id": outcome.operation_id,
+                            "target_state_id": outcome.target_state_id,
+                        })
+                    })
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&view)?);
+            } else {
+                for outcome in &outcomes {
+                    println!(
+                        "committed transaction {} at state {}",
+                        outcome.transaction_id, outcome.target_state_id
+                    );
+                }
+            }
+            Ok(0)
+        }
+    }
+}
+
+fn print_plan(plan: &RollbackPlan) {
+    println!("workspace {}", plan.workspace_id);
+    println!(
+        "decision {}",
+        match plan.decision {
+            PlanDecision::Executable => "EXECUTABLE",
+            PlanDecision::Refused => "REFUSED",
+        }
+    );
+    println!("targets {}", plan.targets.len());
+    println!();
+    println!("proposed order (nothing has been executed)");
+    if plan.order.is_empty() {
+        println!("  (nothing to do)");
+    }
+    for (position, step) in plan.order.iter().enumerate() {
+        let reason = match step.reason {
+            IncludedReason::Selected => "selected".to_owned(),
+            IncludedReason::RequiredBy { operation_id } => {
+                format!("required by operation {operation_id}")
+            }
+        };
+        println!(
+            "  {}. operation {} {} ({reason})",
+            position + 1,
+            step.operation_id,
+            step.direction.as_str()
+        );
+    }
+    if !plan.block_reasons.is_empty() {
+        println!();
+        println!("blocked by");
+        for reason in &plan.block_reasons {
+            println!("  {reason:?}");
+        }
+    }
+    if !plan.conflicts.is_empty() {
+        println!();
+        println!("conflicts");
+        for conflict in &plan.conflicts {
+            println!("  {conflict:?}");
+        }
+    }
+    if !plan.unknowns.is_empty() {
+        println!();
+        println!("unknown evidence in the closure");
+        for unknown in &plan.unknowns {
+            println!(
+                "  operation {}  {}  {}",
+                unknown.operation_id,
+                unknown.evidence.as_str(),
+                unknown.detail
+            );
+        }
+    }
+    if !plan.advisory_context.is_empty() {
+        println!();
+        println!(
+            "{} advisory edges were considered as context and were not acted on",
+            plan.advisory_context.len()
+        );
+    }
+    println!();
+    println!("live state checked: {}", plan.live_state_checked);
 }
 
 fn doctor() -> Result<i32> {
