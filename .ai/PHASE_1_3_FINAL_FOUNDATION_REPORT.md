@@ -216,3 +216,23 @@ owns the redesign).
 **PHASE 1 CONDITIONALLY VERIFIED.** Phase 2 may begin when the project
 owner accepts these documented conditions; the foundation itself is
 honest about every interval it did not observe.
+
+---
+
+## Addendum — Phase 1.4: passive-boundary correlation P1 (history preserved)
+
+The text above is preserved unchanged as the Phase 1.3 record. A later
+independent audit found that the Phase 1.3 async architecture carried a P1
+concurrency correctness defect that this report's verification did not catch:
+the post-hook correlated its boundary through a "newest unconsumed boundary
+of the session" catalog lookup (`pending_boundary`), which can consume another
+command's boundary once multiple asynchronous post-hooks coexist. The
+Phase 1.3 verification itself stands (the nonblocking architecture, the lease
+retry, the degradation model, and the shell experience were all proven
+correct); only the correlation was unsound.
+
+Phase 1.4 fixed it by making the boundary identity explicit: the pre-hook
+prints the boundary's immutable id, the shell holds it for exactly that
+command, and the post-hook claims exactly that id exactly once. Full details
+in `.ai/PHASE_1_4_BOUNDARY_CORRELATION_REPORT.md`. Phase 1 is VERIFIED as of
+Phase 1.4; see that report's §13.

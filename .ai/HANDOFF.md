@@ -1,3 +1,36 @@
+# Phase 1.4 Implementation Handoff
+
+Status: Phase 1.4 (passive boundary identity) complete and locally
+verified; final verdict in `.ai/PHASE_1_4_BOUNDARY_CORRELATION_REPORT.md`.
+**Phase 1 is VERIFIED.** Phase 1.3 and earlier handoff content is preserved
+below unchanged.
+
+## -2. Phase 1.4 boundary-identity invariants (do not regress)
+
+- Every passive post-hook is correlated to exactly one immutable boundary ID.
+  A post-hook never discovers or guesses its boundary by recency, timestamp,
+  command text, cwd, or session ordering. `pending_boundary` is deleted and
+  must never return; do not add any "newest/oldest unconsumed" lookup.
+- `rewind hook pre` prints the boundary id as its single stdout line;
+  `rewind hook post` REQUIRES `--boundary` and claims exactly that boundary
+  exactly once (guarded `UPDATE ... consumed = 0`). Unknown, duplicate, or
+  foreign ids fail open with no side effects.
+- The bash/zsh integrations hold the id in a shell-local variable for exactly
+  one command and pass it to the background post-hook. Never let the id leak
+  across commands.
+- Out-of-order background completion advances the trusted checkpoint in lease
+  order only; an older background observation finishing later must never
+  regress newer trusted state.
+- `tests/boundary_correlation.rs` owns the identity proof (older-before-newer
+  ordering, genuine three-way overlap via the lease barrier,
+  duplicate/unknown/cross-workspace cases). Do not replace it with
+  timing-dependent tests.
+- The Phase 1.3 invariants below remain in force (async post-hook, deleted
+  `HOOK_BUDGET_MS`, 50 ms scan deadline from scan start, background-only
+  lease retry, no `recover_locked` in the hook path).
+
+---
+
 # Phase 1.3 Implementation Handoff
 
 Status: Phase 1.3 (passive hook isolation) complete and CI-verified;

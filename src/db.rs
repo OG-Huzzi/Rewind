@@ -39,6 +39,10 @@ pub struct OperationDraft {
     pub effects: Vec<Effect>,
 }
 
+/// One durable passive boundary. `id` is the immutable identity that the
+/// shell integration captures from the pre-hook and hands back to the
+/// post-hook; it is the only correlation key that may ever be used to pair a
+/// boundary with the background bookkeeping that completes it (Phase 1.4).
 #[derive(Clone, Debug)]
 pub struct BoundaryRow {
     pub id: String,
@@ -46,6 +50,27 @@ pub struct BoundaryRow {
     pub command: String,
     pub cwd: String,
     pub started_at: i64,
+    pub ended_at: Option<i64>,
+    pub exit_code: Option<i32>,
+    /// `true` once exactly one post-hook has accounted for this boundary.
+    /// A consumed boundary is never consumed again.
+    pub consumed: bool,
+}
+
+const BOUNDARY_COLUMNS: &str =
+    "id, session_id, command, cwd, started_at, ended_at, exit_code, consumed";
+
+fn read_boundary(row: &rusqlite::Row<'_>) -> rusqlite::Result<BoundaryRow> {
+    Ok(BoundaryRow {
+        id: row.get(0)?,
+        session_id: row.get(1)?,
+        command: row.get(2)?,
+        cwd: row.get(3)?,
+        started_at: row.get(4)?,
+        ended_at: row.get(5)?,
+        exit_code: row.get(6)?,
+        consumed: row.get::<_, i64>(7)? != 0,
+    })
 }
 
 impl Catalog {
@@ -55,6 +80,11 @@ impl Catalog {
         }
         let catalog = Self { path };
         let connection = catalog.connection()?;
+        // The `passive_boundary_consume_once` trigger makes the boundary
+        // accounting invariant database-enforced rather than caller-enforced:
+        // a boundary that a post-hook has accounted for (`consumed = 1`) can
+        // never be rewritten or resurrected. It is created with IF NOT EXISTS
+        // so existing catalogs pick it up on their next open.
         connection.execute_batch(
             "
             PRAGMA foreign_keys = ON;
@@ -119,8 +149,14 @@ impl Catalog {
                 started_at INTEGER NOT NULL,
                 ended_at INTEGER,
                 exit_code INTEGER,
-                consumed INTEGER NOT NULL DEFAULT 0
+                consumed INTEGER NOT NULL DEFAULT 0 CHECK (consumed IN (0, 1))
             );
+            CREATE TRIGGER IF NOT EXISTS passive_boundary_consume_once
+            BEFORE UPDATE ON passive_boundaries
+            WHEN OLD.consumed = 1
+            BEGIN
+                SELECT RAISE(ABORT, 'passive boundary already accounted for');
+            END;
             CREATE TABLE IF NOT EXISTS bypass_markers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 workspace_id TEXT NOT NULL REFERENCES workspaces(id),
@@ -449,6 +485,14 @@ impl Catalog {
         Ok(())
     }
 
+    /// Creates a durable passive boundary and returns its immutable id.
+    ///
+    /// The id is the ONLY correlation key between a boundary and the
+    /// background post-hook that completes it: the pre-hook prints it, the
+    /// shell integration captures it for exactly the command whose post-hook
+    /// will follow, and the post-hook hands it back. Nothing may ever
+    /// discover a boundary by recency, timestamp, command text, session
+    /// ordering, or "most recent unconsumed" lookup (Phase 1.4).
     pub fn add_boundary(
         &self,
         workspace_id: Uuid,
@@ -473,39 +517,57 @@ impl Catalog {
         Ok(id)
     }
 
-    pub fn pending_boundary(
-        &self,
-        workspace_id: Uuid,
-        session_id: &str,
-    ) -> Result<Option<BoundaryRow>> {
+    /// Fetches exactly one boundary by identity, scoped to the workspace.
+    ///
+    /// Returns `None` when the id is unknown or belongs to another
+    /// workspace; the caller must then fail open. There is deliberately no
+    /// session-scoped or recency-scoped lookup: with asynchronous post-hooks
+    /// several boundaries can be in flight at once, so any "which boundary
+    /// is newest?" lookup can consume another command's boundary.
+    pub fn boundary(&self, workspace_id: Uuid, id: &str) -> Result<Option<BoundaryRow>> {
         let connection = self.connection()?;
         Ok(connection
             .query_row(
-                "SELECT id, session_id, command, cwd, started_at
-                 FROM passive_boundaries
-                 WHERE workspace_id=?1 AND session_id=?2 AND consumed=0
-                 ORDER BY started_at DESC LIMIT 1",
-                params![workspace_id.to_string(), session_id],
-                |row| {
-                    Ok(BoundaryRow {
-                        id: row.get(0)?,
-                        session_id: row.get(1)?,
-                        command: row.get(2)?,
-                        cwd: row.get(3)?,
-                        started_at: row.get(4)?,
-                    })
-                },
+                &format!(
+                    "SELECT {BOUNDARY_COLUMNS} FROM passive_boundaries
+                     WHERE id=?1 AND workspace_id=?2"
+                ),
+                params![id, workspace_id.to_string()],
+                read_boundary,
             )
             .optional()?)
     }
 
-    pub fn finish_boundary(&self, id: &str, exit_code: i32) -> Result<()> {
+    /// Lists a workspace's boundaries in creation order for diagnostics.
+    pub fn boundaries(&self, workspace_id: Uuid) -> Result<Vec<BoundaryRow>> {
         let connection = self.connection()?;
-        connection.execute(
-            "UPDATE passive_boundaries SET ended_at=?2, exit_code=?3, consumed=1 WHERE id=?1",
-            params![id, now(), exit_code],
+        let mut statement = connection.prepare(&format!(
+            "SELECT {BOUNDARY_COLUMNS} FROM passive_boundaries
+             WHERE workspace_id=?1 ORDER BY started_at, id"
+        ))?;
+        let rows = statement.query_map(params![workspace_id.to_string()], read_boundary)?;
+        let mut boundaries = Vec::new();
+        for row in rows {
+            boundaries.push(row?);
+        }
+        Ok(boundaries)
+    }
+
+    /// Atomically accounts for exactly one boundary, recording the finished
+    /// command's exit status. Returns `false` when the boundary does not
+    /// exist in this workspace or was already accounted for; callers must
+    /// treat `false` conservatively (fail open, never fall back to another
+    /// boundary). The `consumed = 0` predicate plus SQLite's write
+    /// serialization make duplicate accounting impossible even when several
+    /// background hook processes race for the same id.
+    pub fn finish_boundary(&self, workspace_id: Uuid, id: &str, exit_code: i32) -> Result<bool> {
+        let connection = self.connection()?;
+        let updated = connection.execute(
+            "UPDATE passive_boundaries SET ended_at=?3, exit_code=?4, consumed=1
+             WHERE id=?1 AND workspace_id=?2 AND consumed=0",
+            params![id, workspace_id.to_string(), now(), exit_code],
         )?;
-        Ok(())
+        Ok(updated == 1)
     }
 
     pub fn add_transaction(

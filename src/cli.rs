@@ -108,10 +108,13 @@ pub enum HookCommand {
         session: Option<String>,
     },
     Post {
+        /// Immutable boundary identity returned by `rewind hook pre` on
+        /// stdout. Required: a post-hook never guesses which boundary it
+        /// belongs to (Phase 1.4).
+        #[arg(long)]
+        boundary: String,
         #[arg(long)]
         exit_code: i32,
-        #[arg(long)]
-        session: Option<String>,
     },
 }
 
@@ -384,7 +387,10 @@ fn doctor() -> Result<i32> {
 fn passive_hook(command: HookCommand) -> Result<i32> {
     let result = match command {
         HookCommand::Pre { command, session } => hook_pre(&command, session.as_deref()),
-        HookCommand::Post { exit_code, session } => hook_post(exit_code, session.as_deref()),
+        HookCommand::Post {
+            boundary,
+            exit_code,
+        } => hook_post(&boundary, exit_code),
     };
     match result {
         Ok(code) => Ok(code),
@@ -408,38 +414,72 @@ fn session_id(value: Option<&str>) -> String {
 /// represented safely by absence: no boundary exists, so no observation
 /// can be fabricated for the interval, and the next writer's
 /// reconcile-first pre-scan catches any live drift.
+///
+/// The boundary's immutable id is printed as a single line on stdout; that
+/// id is the only thing the shell may use to correlate this command's
+/// background post-hook with this boundary (Phase 1.4). Diagnostics go to
+/// stderr so they can never contaminate the captured id.
 fn hook_pre(command: &str, session: Option<&str>) -> Result<i32> {
     let workspace = open_workspace()?;
-    workspace.storage.catalog.add_boundary(
+    let boundary_id = workspace.storage.catalog.add_boundary(
         workspace.id,
         &session_id(session),
         command,
         &workspace.root.to_string_lossy(),
     )?;
+    println!("{boundary_id}");
     Ok(0)
 }
 
-fn hook_post(exit_code: i32, session: Option<&str>) -> Result<i32> {
-    // Shell-facing responsiveness lives in the shell integration, which
-    // launches this command in the background (Phase 1.3): the interactive
-    // shell never waits for bookkeeping, so this process may take as long
-    // as the work legitimately needs. The only in-process bound is the
-    // bookkeeping scan deadline (HOOK_SCAN_DEADLINE_MS), which starts when
-    // the scan is about to run; a scan that cannot finish becomes a
-    // durable CAPTURE_FAILED/unknown interval — never a fabricated
-    // observation. Deferred transaction recovery is deliberately not run
-    // here: finishing a previous transaction is writer work with
-    // unbounded cost, so the hook records a bypass marker and returns
-    // (Phase 1.3 §9; enforced in hook_post_locked).
+/// Post-command bookkeeping for exactly one boundary identity (Phase 1.4).
+///
+/// The id comes from the shell integration, which captured it from the
+/// matching pre-hook; this function never searches for a boundary. Any
+/// uncertainty is resolved conservatively:
+///
+/// - unknown id, id from another workspace, or an id another post-hook
+///   already accounted for -> diagnostic on stderr, exit 0, and *no*
+///   bookkeeping and *no* side effects (never consume another boundary,
+///   never fabricate an observation, never gate the workspace for a
+///   duplicate that changed nothing);
+/// - otherwise the boundary is claimed exactly once, before any further
+///   work, so no two hooks can ever account for the same interval;
+/// - everything after the claim keeps the Phase 1.3 degradation model
+///   (bypass marker / CAPTURE_FAILED / unknown interval), never a
+///   fabricated operation.
+///
+/// Shell-facing responsiveness lives in the shell integration, which
+/// launches this command in the background: the interactive shell never
+/// waits for bookkeeping, so this process may take as long as the work
+/// legitimately needs. The only in-process bound is the bookkeeping scan
+/// deadline (HOOK_SCAN_DEADLINE_MS), which starts when the scan is about to
+/// run. Deferred transaction recovery is deliberately not run here
+/// (Phase 1.3 §9; enforced in hook_post_locked).
+fn hook_post(boundary_id: &str, exit_code: i32) -> Result<i32> {
     let workspace = open_workspace()?;
-    let session = session_id(session);
     let Some(boundary) = workspace
         .storage
         .catalog
-        .pending_boundary(workspace.id, &session)?
+        .boundary(workspace.id, boundary_id)?
     else {
+        eprintln!(
+            "rewind hook diagnostic: passive boundary {boundary_id} is not \
+             present in this workspace (unknown id or another workspace); \
+             no bookkeeping performed"
+        );
         return Ok(0);
     };
+    if !workspace
+        .storage
+        .catalog
+        .finish_boundary(workspace.id, boundary_id, exit_code)?
+    {
+        eprintln!(
+            "rewind hook diagnostic: passive boundary {boundary_id} was \
+             already accounted for; no bookkeeping performed"
+        );
+        return Ok(0);
+    }
     // Overlapping background hooks (rapid typing) serialize on the lease;
     // the holder releases within milliseconds, so wait briefly before the
     // conservative bypass fallback. A writer mid-rollback holds the lease
@@ -507,6 +547,13 @@ fn hook_post_locked(
     exit_code: i32,
     scan_deadline: Instant,
 ) -> Result<i32> {
+    // The boundary was already claimed exactly once by hook_post, before
+    // this locked section: this function only decides how the claimed
+    // interval is represented. Every outcome below keeps the Phase 1.3
+    // model -- observation (HEALTHY, complete scan), gated BoundaryOnly, or
+    // a durable bypass marker that forces writer reconciliation. A
+    // fabricated operation is never an outcome.
+    //
     // Deferred transaction recovery is intentionally omitted from the hook
     // path: a writer that needs recovery owns the workspace and the hook
     // must not pay its cost. If recovery is pending, the hook records a
@@ -520,10 +567,6 @@ fn hook_post_locked(
         append_bypass_marker(workspace, &boundary.id)?;
         return Ok(0);
     }
-    workspace
-        .storage
-        .catalog
-        .finish_boundary(&boundary.id, exit_code)?;
     workspace.enforce_pending_safety_gate()?;
     if workspace.condition()? != WorkspaceCondition::Healthy {
         let baseline = workspace.row()?.baseline_state;

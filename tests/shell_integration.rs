@@ -59,15 +59,20 @@ fn prepend_path(dir: &Path) -> String {
     format!("{}{}{}", dir.display(), separator, existing)
 }
 
-/// Writes a stub `rewind` executable: the pre-hook touches a sentinel
-/// instantly; the post-hook sleeps before touching its sentinel, so a
-/// wrapper that waited synchronously could never return quickly.
+/// Writes a stub `rewind` executable. The pre-hook prints a boundary id on
+/// stdout (the real contract, Phase 1.4) and records it; the post-hook
+/// records the arguments the wrapper gave it, then sleeps before touching
+/// its sentinel, so a wrapper that waited synchronously could never return
+/// quickly.
 fn write_stub_rewind(bin_dir: &Path) {
     let script = "#!/bin/sh\n\
          if [ \"$1\" = \"hook\" ] && [ \"$2\" = \"pre\" ]; then\n\
+         \x20   printf '%s\\n' \"stub-boundary-$$\" >> \"$REWIND_STUB_ID\"\n\
+         \x20   printf 'stub-boundary-%s\\n' \"$$\"\n\
          \x20   touch \"$REWIND_STUB_PRE\"\n\
          fi\n\
          if [ \"$1\" = \"hook\" ] && [ \"$2\" = \"post\" ]; then\n\
+         \x20   printf '%s\\n' \"$*\" >> \"$REWIND_STUB_POST_ARGS\"\n\
          \x20   sleep \"$REWIND_STUB_SLEEP\"\n\
          \x20   touch \"$REWIND_STUB_POST\"\n\
          fi\n\
@@ -122,7 +127,7 @@ fn run_interactive_shell(
             script.push_str(line);
             script.push('\n');
         }
-        script.push_str("exit\n");
+        script.push_str("exit 0\n");
         stdin.write_all(script.as_bytes()).expect("write script");
         stdin.flush().expect("flush script");
     }
@@ -177,10 +182,104 @@ fn observation_count(workspace: &Workspace) -> usize {
         .count()
 }
 
+fn boundaries(workspace: &Workspace) -> Vec<rewind::db::BoundaryRow> {
+    workspace
+        .storage
+        .catalog
+        .boundaries(workspace.id)
+        .expect("boundaries")
+}
+
+/// Phase 1.4: the pre-hook prints the boundary's immutable id on stdout;
+/// tests capture it and always hand exactly that id to the post-hook.
+fn pre_hook_id(bin: &str, store: &Path, root: &Path, command: &str, session: &str) -> String {
+    let output = cli(
+        bin,
+        store,
+        root,
+        &["hook", "pre", "--command", command, "--session", session],
+    );
+    assert!(
+        output.status.success(),
+        "pre-hook failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let id = String::from_utf8(output.stdout)
+        .expect("utf8 boundary id")
+        .trim()
+        .to_owned();
+    assert!(!id.is_empty(), "the pre-hook must print the boundary id");
+    assert!(
+        id.lines().count() == 1,
+        "the pre-hook must print exactly one line"
+    );
+    id
+}
+
+/// Runs the post-hook for a known boundary id and waits for it. Only the
+/// POSIX-only CAS degradation test needs this synchronous form.
+#[cfg(unix)]
+fn post_hook(
+    bin: &str,
+    store: &Path,
+    root: &Path,
+    boundary: &str,
+    exit_code: i32,
+) -> std::process::Output {
+    cli(
+        bin,
+        store,
+        root,
+        &[
+            "hook",
+            "post",
+            "--boundary",
+            boundary,
+            "--exit-code",
+            &exit_code.to_string(),
+        ],
+    )
+}
+
+/// Reads the first boundary id the stub pre-hook recorded.
+fn stub_boundary_id(id_log: &Path) -> String {
+    fs::read_to_string(id_log)
+        .expect("stub id log")
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// Asserts the wrapper handed the stub post-hook the id minted by the stub
+/// pre-hook: boundary identity survives the asynchronous spawn verbatim.
+fn assert_stub_post_received_id(args_log: &Path, id_log: &Path, exit_code: i32) {
+    let recorded = fs::read_to_string(args_log).expect("stub post args log");
+    let line = recorded
+        .lines()
+        .next()
+        .expect("the post-hook must have received arguments");
+    let id = stub_boundary_id(id_log);
+    assert!(
+        !id.is_empty(),
+        "the stub pre-hook must have recorded its boundary id"
+    );
+    assert!(
+        line.contains(&format!("--boundary {id}")),
+        "the wrapper must pass the pre-hook's boundary id; got {line:?} for id {id:?}"
+    );
+    assert!(
+        line.contains(&format!("--exit-code {exit_code}")),
+        "the wrapper must pass the command's exit status; got {line:?}"
+    );
+}
+
 /// §7/§10 core proof: the bash wrapper schedules the post-hook and returns
-/// to the prompt immediately. The stub `rewind` sleeps 12 seconds in its
+/// to the prompt immediately. The stub `rewind` sleeps 45 seconds in its
 /// post-hook — a synchronous wrapper would need at least that long — while
-/// the wrapper must return in well under that.
+/// the wrapper must return in well under that. The same run also proves the
+/// Phase 1.4 identity plumbing: the background post-hook receives the exact
+/// id the pre-hook printed.
 #[test]
 fn bash_wrapper_returns_control_before_bookkeeping_finishes() {
     if !shell_available("bash") {
@@ -192,6 +291,8 @@ fn bash_wrapper_returns_control_before_bookkeeping_finishes() {
     let bin_dir = tempfile::tempdir().expect("stub bin dir");
     let pre_sentinel = root.path().join("stub-pre-sentinel");
     let post_sentinel = root.path().join("stub-post-sentinel");
+    let stub_ids = root.path().join("stub-boundary-ids");
+    let stub_args = root.path().join("stub-post-args");
     write_stub_rewind(bin_dir.path());
 
     let integration = Path::new(env!("CARGO_MANIFEST_DIR")).join("integration/rewind.bash");
@@ -205,6 +306,8 @@ fn bash_wrapper_returns_control_before_bookkeeping_finishes() {
             ("HOME", home.path().to_string_lossy().into_owned()),
             ("REWIND_STUB_PRE", msys_path(&pre_sentinel)),
             ("REWIND_STUB_POST", msys_path(&post_sentinel)),
+            ("REWIND_STUB_ID", msys_path(&stub_ids)),
+            ("REWIND_STUB_POST_ARGS", msys_path(&stub_args)),
             ("REWIND_STUB_SLEEP", STUB_POST_SLEEP_SECS.to_string()),
             (
                 "REWIND_SESSION_ID",
@@ -234,6 +337,7 @@ fn bash_wrapper_returns_control_before_bookkeeping_finishes() {
         wait_for_file(&post_sentinel, BACKGROUND_COMPLETION_LIMIT),
         "the background post-hook must still complete after the shell moved on"
     );
+    assert_stub_post_received_id(&stub_args, &stub_ids, 0);
 }
 
 /// Same proof for zsh, where the runner provides one (macOS CI, and Linux
@@ -249,6 +353,8 @@ fn zsh_wrapper_returns_control_before_bookkeeping_finishes() {
     let bin_dir = tempfile::tempdir().expect("stub bin dir");
     let pre_sentinel = root.path().join("stub-pre-sentinel");
     let post_sentinel = root.path().join("stub-post-sentinel");
+    let stub_ids = root.path().join("stub-boundary-ids");
+    let stub_args = root.path().join("stub-post-args");
     write_stub_rewind(bin_dir.path());
 
     let integration = Path::new(env!("CARGO_MANIFEST_DIR")).join("integration/rewind.zsh");
@@ -262,6 +368,8 @@ fn zsh_wrapper_returns_control_before_bookkeeping_finishes() {
             ("HOME", home.path().to_string_lossy().into_owned()),
             ("REWIND_STUB_PRE", msys_path(&pre_sentinel)),
             ("REWIND_STUB_POST", msys_path(&post_sentinel)),
+            ("REWIND_STUB_ID", msys_path(&stub_ids)),
+            ("REWIND_STUB_POST_ARGS", msys_path(&stub_args)),
             ("REWIND_STUB_SLEEP", STUB_POST_SLEEP_SECS.to_string()),
             (
                 "REWIND_SESSION_ID",
@@ -285,6 +393,7 @@ fn zsh_wrapper_returns_control_before_bookkeeping_finishes() {
         wait_for_file(&post_sentinel, BACKGROUND_COMPLETION_LIMIT),
         "the background post-hook must still complete after the shell moved on"
     );
+    assert_stub_post_received_id(&stub_args, &stub_ids, 0);
 }
 
 /// §11 flow 1: a real passive command through the real wrapper records an
@@ -573,17 +682,11 @@ fn terminated_background_hook_never_becomes_trusted() {
         .expect("bulk file");
     }
 
-    let token = format!("killtok-{}-{}", std::process::id(), STUB_POST_SLEEP_SECS);
-    let pre = cli(
-        rewind_bin(),
-        store.path(),
-        root.path(),
-        &["hook", "pre", "--command", "victim", "--session", &token],
-    );
-    assert!(pre.status.success());
+    let session = format!("killtok-{}", std::process::id());
+    let boundary = pre_hook_id(rewind_bin(), store.path(), root.path(), "victim", &session);
 
     let mut child = Command::new(rewind_bin())
-        .args(["hook", "post", "--exit-code", "0", "--session", &token])
+        .args(["hook", "post", "--boundary", &boundary, "--exit-code", "0"])
         .current_dir(root.path())
         .env("REWIND_HOME", store.path())
         .stdout(Stdio::null())
@@ -599,6 +702,11 @@ fn terminated_background_hook_never_becomes_trusted() {
         observation_count(&workspace),
         0,
         "a terminated hook must never produce an observation"
+    );
+    assert_eq!(
+        boundaries(&workspace).len(),
+        1,
+        "a terminated hook must not fabricate boundaries"
     );
 
     // External mutation on top of the lost boundary, then a writer: it must
@@ -644,20 +752,8 @@ fn post_hook_fails_open_when_workspace_disappears() {
     let store = tempfile::tempdir().expect("store");
     let init = cli(rewind_bin(), store.path(), root.path(), &["init", "."]);
     assert!(init.status.success());
-    let pre = cli(
-        rewind_bin(),
-        store.path(),
-        root.path(),
-        &[
-            "hook",
-            "pre",
-            "--command",
-            "vanish",
-            "--session",
-            &format!("vanish-{}", std::process::id()),
-        ],
-    );
-    assert!(pre.status.success());
+    let session = format!("vanish-{}", std::process::id());
+    let boundary = pre_hook_id(rewind_bin(), store.path(), root.path(), "vanish", &session);
 
     fs::remove_dir_all(root.path()).expect("delete workspace");
     // The shell's directory no longer exists; from the nearest surviving
@@ -669,14 +765,7 @@ fn post_hook_fails_open_when_workspace_disappears() {
         .expect("workspace parent")
         .to_path_buf();
     let post = Command::new(rewind_bin())
-        .args([
-            "hook",
-            "post",
-            "--exit-code",
-            "0",
-            "--session",
-            &format!("vanish-{}", std::process::id()),
-        ])
+        .args(["hook", "post", "--boundary", &boundary, "--exit-code", "0"])
         .current_dir(&parent)
         .env("REWIND_HOME", store.path())
         .output()
@@ -714,19 +803,8 @@ fn unwritable_cas_degrades_to_capture_gap() {
     fs::set_permissions(&cas_tmp_dir, fs::Permissions::from_mode(0o555)).expect("lock cas tmp");
 
     let session = format!("cas-{}", std::process::id());
-    let pre = cli(
-        rewind_bin(),
-        store.path(),
-        root.path(),
-        &["hook", "pre", "--command", "casfail", "--session", &session],
-    );
-    assert!(pre.status.success());
-    let post = cli(
-        rewind_bin(),
-        store.path(),
-        root.path(),
-        &["hook", "post", "--exit-code", "0", "--session", &session],
-    );
+    let boundary = pre_hook_id(rewind_bin(), store.path(), root.path(), "casfail", &session);
+    let post = post_hook(rewind_bin(), store.path(), root.path(), &boundary, 0);
     assert_eq!(
         post.status.code(),
         Some(0),
@@ -737,6 +815,19 @@ fn unwritable_cas_degrades_to_capture_gap() {
     fs::set_permissions(&cas_tmp_dir, fs::Permissions::from_mode(0o755)).expect("unlock cas tmp");
 
     let workspace = Workspace::open_from_current(root.path()).expect("reopen workspace");
+    // The interval is accounted for exactly once even though its capture
+    // failed: the durable record is the gap, never a fabricated observation.
+    let rows = boundaries(&workspace);
+    assert_eq!(
+        rows.len(),
+        1,
+        "a failed capture must not fabricate boundaries"
+    );
+    assert_eq!(rows[0].id, boundary);
+    assert!(
+        rows[0].consumed && rows[0].exit_code == Some(0),
+        "the claimed boundary must be accounted for exactly once"
+    );
     assert_eq!(
         condition(&workspace),
         WorkspaceCondition::ReconciliationRequired,
@@ -763,4 +854,198 @@ fn unwritable_cas_degrades_to_capture_gap() {
         fs::read(root.path().join("hooked.txt")).expect("hooked preserved"),
         b"hooked"
     );
+}
+
+/// §8 (bash): several rapid commands in one interactive session. The shell
+/// never waits for bookkeeping, so several background post-hooks coexist.
+/// Each command writes its own file and ends with its own exit status, so the
+/// catalog can prove exact identity: the interval that produced `b.txt` must
+/// be recorded with exit code 9, never with another command's status.
+#[test]
+fn bash_rapid_commands_keep_command_identity() {
+    if !shell_available("bash") {
+        eprintln!("SKIPPED: bash is unavailable on this runner");
+        return;
+    }
+    rapid_commands_keep_command_identity("bash");
+}
+
+/// Same proof for zsh, where the runner provides one (macOS CI, and Linux CI
+/// images that ship zsh). Absence is reported honestly, not faked.
+#[test]
+fn zsh_rapid_commands_keep_command_identity() {
+    if !shell_available("zsh") {
+        eprintln!("SKIPPED: zsh is unavailable on this runner (reported honestly)");
+        return;
+    }
+    rapid_commands_keep_command_identity("zsh");
+}
+
+fn rapid_commands_keep_command_identity(shell: &str) {
+    let root = tempfile::tempdir().expect("workspace root");
+    let store = tempfile::tempdir().expect("store");
+    let home = tempfile::tempdir().expect("hermetic home");
+    let init = cli(rewind_bin(), store.path(), root.path(), &["init", "."]);
+    assert!(
+        init.status.success(),
+        "init failed: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+
+    let bin_dir = Path::new(rewind_bin())
+        .parent()
+        .expect("binary parent dir")
+        .to_path_buf();
+    let integration =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("integration/rewind.{shell}"));
+    // One boundary per line on both shells: bash's DEBUG trap fires once per
+    // simple command (the status is set inside the single `sh -c` command),
+    // and zsh's preexec sees the whole line.
+    let run = run_interactive_shell(
+        shell,
+        &integration,
+        &[
+            "printf a > a.txt",
+            "sh -c 'printf b > b.txt; exit 9'",
+            "sh -c 'printf c > c.txt; exit 5'",
+        ],
+        root.path(),
+        &[
+            ("PATH", prepend_path(&bin_dir)),
+            ("HOME", home.path().to_string_lossy().into_owned()),
+            ("REWIND_HOME", store.path().to_string_lossy().into_owned()),
+            (
+                "REWIND_SESSION_ID",
+                format!("rapid-{shell}-{}", std::process::id()),
+            ),
+        ],
+        &root.path().join(format!("{shell}-rapid-stderr.log")),
+    );
+    assert!(
+        run.output.success(),
+        "the wrapper must never change the shell's exit status"
+    );
+    // The user's commands really ran, with the statuses the catalog must
+    // later attribute to exactly those commands.
+    assert_eq!(fs::read(root.path().join("a.txt")).expect("a.txt"), b"a");
+    assert_eq!(fs::read(root.path().join("b.txt")).expect("b.txt"), b"b");
+    assert_eq!(fs::read(root.path().join("c.txt")).expect("c.txt"), b"c");
+
+    let workspace = Workspace::open_from_current(root.path()).expect("open workspace");
+    let expected: [(&str, i32); 3] = [("a.txt", 0), ("b.txt", 9), ("c.txt", 5)];
+    let deadline = Instant::now() + BACKGROUND_COMPLETION_LIMIT;
+    loop {
+        let consumed = boundaries(&workspace)
+            .iter()
+            .filter(|row| row.consumed)
+            .count();
+        if consumed >= expected.len() || Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    // Identity (unconditional): exactly one boundary per command, each
+    // accounted for exactly once, each keeping its own exit status.
+    let rows = boundaries(&workspace);
+    for (token, exit_code) in expected {
+        let matching: Vec<_> = rows
+            .iter()
+            .filter(|row| row.command.contains(token))
+            .collect();
+        assert_eq!(
+            matching.len(),
+            1,
+            "exactly one boundary per command; found {:?}",
+            rows.iter()
+                .map(|row| (&row.command, row.exit_code, row.consumed))
+                .collect::<Vec<_>>()
+        );
+        let row = matching[0];
+        assert!(
+            row.consumed,
+            "{token} must be accounted for by its own post-hook"
+        );
+        assert_eq!(
+            row.exit_code,
+            Some(exit_code),
+            "{token} must keep its own exit status: a boundary was paired with \
+             the wrong command"
+        );
+    }
+    // Nothing else may be fabricated: the only permitted extra boundary is
+    // the harness's trailing `exit` line, whose post-hook can never run.
+    for row in rows.iter().filter(|row| {
+        !expected
+            .iter()
+            .any(|(token, _)| row.command.contains(token))
+    }) {
+        assert!(
+            row.command == "exit" || row.command.starts_with("exit "),
+            "an unexpected boundary was fabricated: {:?}",
+            row.command
+        );
+        assert!(
+            !row.consumed,
+            "the trailing exit line can never be accounted for"
+        );
+    }
+
+    // Provenance (unconditional): no strong operation may be fabricated, and
+    // every recorded operation that mentions one of the commands carries that
+    // command's own exit status.
+    let operations = workspace
+        .storage
+        .catalog
+        .list_operations(workspace.id)
+        .expect("operations");
+    for operation in &operations {
+        assert_ne!(
+            operation.kind.as_str(),
+            "STRONG",
+            "passive bookkeeping must never fabricate a strong operation"
+        );
+        if let Some(command) = operation.command.as_deref() {
+            if let Some((_, exit_code)) = expected.iter().find(|(token, _)| command.contains(token))
+            {
+                assert_eq!(
+                    operation.exit_code,
+                    Some(*exit_code),
+                    "operation {command:?} must carry its own command's exit status"
+                );
+            }
+        }
+    }
+
+    if observation_count(&workspace) == expected.len() {
+        assert_eq!(condition(&workspace), WorkspaceCondition::Healthy);
+        return;
+    }
+    // Load-degraded branch (the Phase 1.3 rule): a bounded scan may not have
+    // completed for some interval, so fewer observations exist. That is
+    // acceptable only if the conservative durable trace is present, and
+    // reconciliation must still restore HEALTHY.
+    eprintln!(
+        "NOTE: {} of 3 observations landed (bounded scan, load-dependent); \
+         verifying the conservative trace instead",
+        observation_count(&workspace)
+    );
+    let gated = condition(&workspace) == WorkspaceCondition::ReconciliationRequired
+        || workspace
+            .storage
+            .catalog
+            .has_pending_bypass(workspace.id)
+            .expect("bypass")
+        || workspace
+            .storage
+            .catalog
+            .has_open_unknown(workspace.id)
+            .expect("gap");
+    assert!(
+        gated,
+        "a missing observation must leave a durable conservative trace"
+    );
+    let checkpoint = cli(rewind_bin(), store.path(), root.path(), &["reconcile"]);
+    assert_eq!(checkpoint.status.code(), Some(0));
+    assert_eq!(condition(&workspace), WorkspaceCondition::Healthy);
 }

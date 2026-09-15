@@ -165,6 +165,29 @@ fn cli_in(bin: &str, store: &Path, root: &Path, args: &[&str]) -> std::process::
         .expect("run rewind cli")
 }
 
+/// Phase 1.4: the pre-hook prints the boundary's immutable id on stdout and
+/// the post-hook must be given exactly that id. Tests always capture it —
+/// nothing may rediscover a boundary by session, recency, or command text.
+fn pre_hook_id(bin: &str, store: &Path, root: &Path, command: &str, session: &str) -> String {
+    let output = cli_in(
+        bin,
+        store,
+        root,
+        &["hook", "pre", "--command", command, "--session", session],
+    );
+    assert!(
+        output.status.success(),
+        "pre hook failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let id = String::from_utf8(output.stdout)
+        .expect("utf8 boundary id")
+        .trim()
+        .to_owned();
+    assert!(!id.is_empty(), "the pre-hook must print the boundary id");
+    id
+}
+
 /// Phase 1.2 Fix #1 semantics (reframed by Phase 1.3): a post-hook whose
 /// bounded scan cannot finish (large real workspace, real CAS + SQLite
 /// pressure) must degrade conservatively — durable CAPTURE_FAILED/gap
@@ -191,37 +214,34 @@ fn passive_scan_deadline_degrades_to_capture_gap() {
     }
 
     let session = format!("sess-{}", std::process::id());
-    let pre = cli_in(
-        bin,
-        store.path(),
-        root.path(),
-        &[
-            "hook",
-            "pre",
-            "--command",
-            "slow passive",
-            "--session",
-            &session,
-        ],
-    );
-    assert!(
-        pre.status.success(),
-        "pre hook failed: {}",
-        String::from_utf8_lossy(&pre.stderr)
-    );
+    let boundary = pre_hook_id(bin, store.path(), root.path(), "slow passive", &session);
     fs::write(root.path().join("hooked.txt"), b"hooked").expect("hooked change");
 
     let post = cli_in(
         bin,
         store.path(),
         root.path(),
-        &["hook", "post", "--exit-code", "0", "--session", &session],
+        &["hook", "post", "--boundary", &boundary, "--exit-code", "0"],
     );
     assert_eq!(
         post.status.code(),
         Some(0),
         "hook must always fail open for the caller; stderr: {}",
         String::from_utf8_lossy(&post.stderr)
+    );
+
+    // The interval is accounted for exactly once even though its capture
+    // failed: the durable record is the capture gap, not an observation.
+    let rows = workspace
+        .storage
+        .catalog
+        .boundaries(workspace.id)
+        .expect("boundaries");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, boundary);
+    assert!(
+        rows[0].consumed && rows[0].exit_code == Some(0),
+        "the claimed boundary must be accounted for exactly once"
     );
 
     assert_eq!(
@@ -271,29 +291,18 @@ fn passive_hook_defers_recovery_to_writer() {
     craft_unfinished_quarantine_step(&workspace, &root, "foo.txt");
 
     let session = format!("sess-defer-{}", std::process::id());
-    let pre = cli_in(
+    let boundary = pre_hook_id(
         bin,
         store.path(),
         root.path(),
-        &[
-            "hook",
-            "pre",
-            "--command",
-            "deferred recovery",
-            "--session",
-            &session,
-        ],
-    );
-    assert!(
-        pre.status.success(),
-        "pre hook failed: {}",
-        String::from_utf8_lossy(&pre.stderr)
+        "deferred recovery",
+        &session,
     );
     let post = cli_in(
         bin,
         store.path(),
         root.path(),
-        &["hook", "post", "--exit-code", "0", "--session", &session],
+        &["hook", "post", "--boundary", &boundary, "--exit-code", "0"],
     );
     assert_eq!(
         post.status.code(),
@@ -301,6 +310,15 @@ fn passive_hook_defers_recovery_to_writer() {
         "hook must fail open; stderr: {}",
         String::from_utf8_lossy(&post.stderr)
     );
+    // The interval is accounted for exactly once even though the hook
+    // deferred the work it must not do.
+    let rows = workspace
+        .storage
+        .catalog
+        .boundaries(workspace.id)
+        .expect("boundaries");
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].consumed && rows[0].exit_code == Some(0));
     // The interrupted transaction is still unfinished: the hook deferred it
     // (structural evidence that recovery was not run inline — recovery
     // would have completed or abandoned the transaction).

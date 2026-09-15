@@ -121,6 +121,35 @@ Fixes for the Phase 1.2 hardening charter (repo live at
   Phase 1.2 charter forbids performance redesign; the measurement is
   recorded as the Phase 2 baseline.
 
+## Phase 1.4 — passive boundary identity and final verification
+
+- P1 concurrency fix: the post-hook's "newest unconsumed boundary of the
+  session" lookup (`pending_boundary`, deleted) could consume another
+  command's boundary once background post-hooks coexist. The pre-hook now
+  prints the boundary's immutable id, the bash/zsh integrations hold it for
+  exactly one command, and the post-hook requires `--boundary` and claims
+  exactly that id exactly once (guarded `UPDATE ... consumed = 0`).
+- Unknown, already-consumed, and cross-workspace ids fail open with a
+  diagnostic and no side effects; a boundary can never be consumed by a
+  different workspace or twice.
+- Database-enforced invariants: `passive_boundary_consume_once` trigger
+  (installed on every open, including pre-existing catalogs) refuses to
+  rewrite or resurrect an accounted-for boundary; `CHECK (consumed IN (0, 1))`
+  on new catalogs; `BoundaryRow` exposes `ended_at`/`exit_code`/`consumed`.
+- Ordering rule: out-of-order background completion advances the trusted
+  checkpoint in lease order only — an older background observation finishing
+  later can never regress newer trusted state.
+- New `tests/boundary_correlation.rs` (10 deterministic tests): older-post
+  ordering, genuine three-way overlap behind a lease barrier, duplicate /
+  unknown / cross-workspace ids, writer-lease deferral, two-session
+  provenance, and SQL-level negative assertions. The key regression test was
+  shown to FAIL against the retired lookup and PASS with the fix.
+- Real-shell coverage: the stub tests now also prove the wrapper hands the
+  pre-hook's id to the post-hook; new per-shell rapid-command tests assert
+  A→A / B→B / C→C with exact exit codes through the actual integrations.
+- Full suite is 48 tests, all green locally; CI observed on all platforms.
+  No Phase 2 functionality was introduced.
+
 ## Phase 1.3 — passive hook isolation and final verification
 
 - Shell integration (bash/zsh) launches `rewind hook post` in the
