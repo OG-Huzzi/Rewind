@@ -343,3 +343,30 @@ therefore **not** an independent review; it is recorded as such.
 review agent) should re-read `.ai/PHASE_2_DEPENDENCY_AWARE_INSPECTION.md` and
 README this package, and record a pass/fail per contract obligation with an
 evidence link.
+---
+
+## 15. CI record for Phase 2
+
+**Run #21** (commit `6014a1b`, the first pushed Phase 2 head): **ubuntu-latest
+failed; macos-latest passed; windows-latest passed.**
+
+The failure was a defect in the Phase 2 *tests*, not in the product. Three call
+sites in `tests/phase2_dependency.rs` passed POSIX script bodies without a
+`#!/bin/sh` shebang. `common::shell_script` writes the POSIX body verbatim and
+marks it executable, so on Linux `execve` returned `Exec format error` (os error
+8) for every test that ran a supervised command. macOS tolerated it and Windows
+used the `.cmd` path, which is why only one platform failed.
+
+Failing tests included `a_plan_is_deterministic`,
+`a_capture_failed_operation_in_the_closure_blocks_the_plan` and
+`a_refused_plan_executes_nothing`, plus their siblings in the same suite.
+
+**Fix:** the three call sites now pass `#!/bin/sh\n…\n`, matching the convention
+already used in `tests/foundation.rs` and `tests/rollback_tree.rs`. Test-only:
+no product code changed, and the local gate stayed green before and after. The
+POSIX path cannot be exercised on Windows at all — which is precisely why CI is
+the authority for non-host platforms, and why this class of defect must be caught
+there rather than argued away locally.
+
+**Run #19** (`4b5dddb`) and **run #20** (`aff0dbb`) were both green on all three
+platforms; these are the Phase 1.4 verification and its documentation commit.

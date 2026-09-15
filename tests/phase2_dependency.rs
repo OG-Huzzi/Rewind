@@ -96,8 +96,8 @@ fn lineage_edges_from_real_history_are_known() {
         let argv = common::shell_script(
             scratch.path(),
             content,
-            &format!("echo {content}> {content}.txt"),
-            &format!("echo {content} > {content}.txt"),
+            &format!("@echo off\necho {content}> {content}.txt\n"),
+            &format!("#!/bin/sh\necho {content} > {content}.txt\n"),
         );
         workspace.run_command(&argv).expect("supervised command");
     }
@@ -184,8 +184,8 @@ fn two_command_workspace(
         let argv = common::shell_script(
             scratch.path(),
             content,
-            &format!("echo {content}> {content}.txt"),
-            &format!("echo {content} > {content}.txt"),
+            &format!("@echo off\necho {content}> {content}.txt\n"),
+            &format!("#!/bin/sh\necho {content} > {content}.txt\n"),
         );
         workspace.run_command(&argv).expect("supervised command");
     }
@@ -388,8 +388,8 @@ fn a_stale_plan_is_refused() {
     let argv = common::shell_script(
         scratch.path(),
         "three",
-        "echo three> three.txt",
-        "echo three > three.txt",
+        "@echo off\necho three> three.txt\n",
+        "#!/bin/sh\necho three > three.txt\n",
     );
     workspace.run_command(&argv).expect("supervised command");
 
