@@ -491,9 +491,9 @@ fn hook_post(boundary_id: &str, exit_code: i32) -> Result<i32> {
             return Ok(0);
         }
     };
-    // The scan deadline bounds the scan itself, measured from here.
-    let deadline = Instant::now() + Duration::from_millis(HOOK_SCAN_DEADLINE_MS);
-    let result = hook_post_locked(&workspace, &boundary, exit_code, deadline);
+    // The scan deadline is started inside hook_post_locked, immediately
+    // before the scan runs (see its comment).
+    let result = hook_post_locked(&workspace, &boundary, exit_code);
     drop(lease);
     match result {
         Ok(code) => Ok(code),
@@ -545,7 +545,6 @@ fn hook_post_locked(
     workspace: &Workspace,
     boundary: &crate::db::BoundaryRow,
     exit_code: i32,
-    scan_deadline: Instant,
 ) -> Result<i32> {
     // The boundary was already claimed exactly once by hook_post, before
     // this locked section: this function only decides how the claimed
@@ -589,6 +588,13 @@ fn hook_post_locked(
         return Ok(0);
     }
     let baseline = workspace.baseline_id()?;
+    // The scan deadline bounds the scan itself and starts when the scan is
+    // about to run (Phase 1.3 contract, made exact): the workspace open,
+    // the lease work, and the gate/baseline reads above are not scan work
+    // and must not consume the scan's budget. A scan that cannot finish
+    // inside the budget records a durable capture gap instead of a
+    // fabricated observation.
+    let scan_deadline = Instant::now() + Duration::from_millis(HOOK_SCAN_DEADLINE_MS);
     let scan = match workspace.scan(Some(scan_deadline)) {
         Ok(scan) => scan,
         Err(error) => {
