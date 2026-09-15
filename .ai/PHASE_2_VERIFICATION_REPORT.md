@@ -325,10 +325,11 @@ weakened.
 
 ## 14. Review
 
-The review was attempted by an independent agent twice; both attempts failed on
-infrastructure (the first lost its execution context, the second failed its
-model request), so no independent review artefact exists. That requirement is
-recorded here as **UNMET**, not as passed.
+The review was attempted by an independent agent **three times**; every attempt
+failed on infrastructure (lost execution context, then two model-request
+failures), so no independent review artefact exists. The requirement is recorded
+here as **UNMET**, not as passed. No fourth attempt was made: three identical
+failures is a pattern, and repeating it would be noise rather than progress.
 
 In place of it, the four load-bearing claims were re-checked directly against the
 source, with the lines quoted. This is AutoCoder's own verification and is
