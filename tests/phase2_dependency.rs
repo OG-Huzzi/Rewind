@@ -38,7 +38,11 @@ fn observe_never_ingests_objects_into_the_cas() {
     let workspace = Workspace::init(root.path(), Some(store.path())).expect("init");
     let cas_root = store.path().join("cas");
     let seeded = blob_names(&cas_root);
-    assert_eq!(seeded.len(), 1, "init must ingest exactly the seeded object");
+    assert_eq!(
+        seeded.len(),
+        1,
+        "init must ingest exactly the seeded object"
+    );
 
     // A file written after init has never been ingested.
     fs::write(root.path().join("fresh.txt"), b"fresh").expect("write fresh file");
@@ -66,5 +70,66 @@ fn observe_never_ingests_objects_into_the_cas() {
         blob_names(&cas_root).len(),
         before.len() + 1,
         "scan must still ingest the new object"
+    );
+}
+
+mod common;
+
+use rewind::depgraph::{DependencyGraph, EdgeConfidence, EvidenceKind, NodeId};
+
+#[test]
+fn lineage_edges_from_real_history_are_known() {
+    let root = tempfile::tempdir().expect("workspace root");
+    let store = tempfile::tempdir().expect("store");
+    // Scripts live outside the workspace: a script written into the workspace
+    // between two commands would itself change the tree and break the state
+    // chain the test is checking.
+    let scratch = tempfile::tempdir().expect("scratch");
+    let workspace = Workspace::init(root.path(), Some(store.path())).expect("init");
+
+    for content in ["one", "two"] {
+        let argv = common::shell_script(
+            scratch.path(),
+            content,
+            &format!("echo {content}> {content}.txt"),
+            &format!("echo {content} > {content}.txt"),
+        );
+        workspace.run_command(&argv).expect("supervised command");
+    }
+
+    let graph = DependencyGraph::build(&workspace).expect("build graph");
+    assert!(graph.is_finished(), "build must return a normalised graph");
+
+    let operations: Vec<&NodeId> = graph
+        .nodes
+        .iter()
+        .filter(|node| matches!(node, NodeId::Operation { .. }))
+        .collect();
+    assert_eq!(operations.len(), 2, "one node per recorded operation");
+
+    let known: Vec<_> = graph
+        .edges
+        .iter()
+        .filter(|edge| edge.confidence == EdgeConfidence::Known)
+        .collect();
+    assert!(
+        !known.is_empty(),
+        "two chained strong captures share a state id, so a known edge must exist"
+    );
+    assert!(
+        known
+            .iter()
+            .all(|edge| edge.evidence == EvidenceKind::StateLineage),
+        "only state lineage may be known"
+    );
+    assert!(
+        graph.cycles.is_empty(),
+        "recorded history must not produce a cycle"
+    );
+
+    let rebuilt = DependencyGraph::build(&workspace).expect("rebuild graph");
+    assert_eq!(
+        graph.to_json().expect("json"),
+        rebuilt.to_json().expect("json")
     );
 }

@@ -1,6 +1,7 @@
 pub mod cas;
 pub mod cli;
 pub mod db;
+pub mod depgraph;
 pub mod error;
 pub mod journal;
 pub mod model;
