@@ -419,3 +419,83 @@ fn an_already_undone_operation_is_not_an_eligible_target() {
         plan.conflicts
     );
 }
+
+// ---------------------------------------------------------------------------
+// Phase 2 interactive surface (presentation only)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_interactive_surface_renders_and_refuses_mutation() {
+    let root = tempfile::tempdir().expect("workspace root");
+    let store = tempfile::tempdir().expect("store");
+    let scratch = tempfile::tempdir().expect("scratch");
+    let workspace = two_command_workspace(&root, &store, &scratch);
+    let ids = operation_ids(&workspace);
+
+    let before = tree_snapshot(root.path());
+
+    let plan_action = rewind::ui::parse(&format!("plan undo {}", ids[0]));
+    let text = rewind::ui::render(&workspace, &plan_action).expect("render plan");
+    assert!(text.contains("decision EXECUTABLE"), "{text}");
+    assert!(text.contains("nothing was executed"), "{text}");
+
+    let refused = rewind::ui::parse("apply");
+    let text = rewind::ui::render(&workspace, &refused).expect("render refusal");
+    assert!(text.contains("refused: apply"), "{text}");
+
+    assert_eq!(
+        tree_snapshot(root.path()),
+        before,
+        "rendering must not touch the workspace"
+    );
+}
+
+#[test]
+fn the_interactive_surface_answers_over_stdin_and_executes_nothing() {
+    use std::io::Write;
+
+    let root = tempfile::tempdir().expect("workspace root");
+    let store = tempfile::tempdir().expect("store");
+    let scratch = tempfile::tempdir().expect("scratch");
+    let workspace = two_command_workspace(&root, &store, &scratch);
+    let ids = operation_ids(&workspace);
+    let before = tree_snapshot(root.path());
+
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_rewind"))
+        .arg("ui")
+        .current_dir(root.path())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn the interactive surface");
+    {
+        let stdin = child.stdin.as_mut().expect("stdin");
+        writeln!(stdin, "history").expect("write");
+        writeln!(stdin, "plan undo {}", ids[0]).expect("write");
+        writeln!(stdin, "apply").expect("write");
+        writeln!(stdin, "frobnicate").expect("write");
+        writeln!(stdin, "quit").expect("write");
+    }
+    let output = child.wait_with_output().expect("output");
+    let text = String::from_utf8_lossy(&output.stdout);
+
+    assert!(text.contains("STRONG"), "history renders: {text}");
+    assert!(
+        text.contains("decision EXECUTABLE"),
+        "the plan renders: {text}"
+    );
+    assert!(
+        text.contains("refused: apply"),
+        "mutation is refused: {text}"
+    );
+    assert!(
+        text.contains("invalid: frobnicate"),
+        "junk is reported: {text}"
+    );
+    assert_eq!(
+        tree_snapshot(root.path()),
+        before,
+        "the surface must never execute anything"
+    );
+}

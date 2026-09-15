@@ -9,6 +9,7 @@ pub mod paths;
 pub mod plan;
 pub mod rollback;
 pub mod scan;
+pub mod ui;
 pub mod workspace;
 
 pub use error::{Result, RewindError};

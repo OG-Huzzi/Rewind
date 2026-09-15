@@ -99,6 +99,8 @@ pub enum Command {
         #[command(subcommand)]
         command: ApplyCommand,
     },
+    /// The minimum read-only interactive surface (Phase 2).
+    Ui,
     Hook {
         #[command(subcommand)]
         command: HookCommand,
@@ -359,6 +361,7 @@ pub fn run(cli: Cli) -> Result<i32> {
         Command::Inspect { command } => inspect(command),
         Command::Plan { command } => plan_command(command),
         Command::Apply { command } => apply(command),
+        Command::Ui => ui(),
         Command::Doctor => doctor(),
         Command::Hook { command } => passive_hook(command),
     }
@@ -494,6 +497,11 @@ fn inspect_history(workspace: &Workspace, json: bool, limit: Option<usize>) -> R
         );
     }
     Ok(0)
+}
+
+fn ui() -> Result<i32> {
+    let workspace = open_workspace()?;
+    crate::ui::run(&workspace)
 }
 
 fn collect_targets(undo_ids: Vec<i64>, redo_ids: Vec<i64>) -> Vec<RollbackTarget> {
