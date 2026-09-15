@@ -122,7 +122,13 @@ Fixes for the Phase 1.2 hardening charter (repo live at
   recorded as the Phase 2 baseline.
 
 ## Phase 1.4 — passive boundary identity and final verification
-
+- Post-CI follow-ups: `06cb33b` (the 50 ms scan deadline now starts immediately
+  before the scan; the observation-path tests assert both branches; the report's
+  CI and verdict record was corrected to the runs actually observed) and
+  `4b5dddb` (the rapid-command shell test waits for the bookkeeping to settle
+  rather than for boundaries to be claimed, and the durable-trace predicate
+  matches the product gate `condition != HEALTHY`). CI run #19 on `4b5dddb` is
+  green on ubuntu-latest, macos-latest and windows-latest.
 - P1 concurrency fix: the post-hook's "newest unconsumed boundary of the
   session" lookup (`pending_boundary`, deleted) could consume another
   command's boundary once background post-hooks coexist. The pre-hook now

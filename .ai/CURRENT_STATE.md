@@ -1,8 +1,8 @@
 # Current Implementation State
 
-Status: Phase 1.4 (passive boundary identity) complete and locally
-verified; final verdict in `.ai/PHASE_1_4_BOUNDARY_CORRELATION_REPORT.md`
-(**Phase 1 VERIFIED**).
+Status: Phase 1.4 (passive boundary identity) complete and CI-verified
+(run #19 on `4b5dddb`: ubuntu, macOS and windows all green); final verdict in
+`.ai/PHASE_1_4_BOUNDARY_CORRELATION_REPORT.md` (**Phase 1 VERIFIED**).
 
 ## Completed
 
@@ -48,9 +48,9 @@ verified; final verdict in `.ai/PHASE_1_4_BOUNDARY_CORRELATION_REPORT.md`
 
 - Local gates all green on `x86_64-pc-windows-gnu` (Rust 1.98.1): fmt, check,
   clippy (-D warnings), and the full 48-test suite run repeatedly.
-- Phase 1.3 CI (ubuntu, macos, windows/MSVC) was green for the Phase 1.3
-  commit; the Phase 1.4 commit is verified locally and CI is being observed
-  on push (see the Phase 1.4 report §11 for the final per-platform results).
+- Phase 1.4 CI is green for `4b5dddb` (run #19: ubuntu, macOS, windows/MSVC).
+  The two preceding revisions had failed on macOS, and `b69817d` also on
+  windows; see the Phase 1.4 report section 11 for the per-platform results.
 - zsh coverage runs where zsh is available (macOS/Linux CI) and reports an
   honest skip on windows-latest.
 

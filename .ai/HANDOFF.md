@@ -1,9 +1,9 @@
 # Phase 1.4 Implementation Handoff
 
-Status: Phase 1.4 (passive boundary identity) complete and locally
-verified; final verdict in `.ai/PHASE_1_4_BOUNDARY_CORRELATION_REPORT.md`.
-**Phase 1 is VERIFIED.** Phase 1.3 and earlier handoff content is preserved
-below unchanged.
+Status: Phase 1.4 (passive boundary identity) complete and CI-verified
+(run #19 on `4b5dddb`: ubuntu, macOS and windows all green); final verdict in
+`.ai/PHASE_1_4_BOUNDARY_CORRELATION_REPORT.md`. **Phase 1 is VERIFIED.**
+Phase 1.3 and earlier handoff content is preserved below unchanged.
 
 ## -2. Phase 1.4 boundary-identity invariants (do not regress)
 

@@ -8,13 +8,12 @@ verification pass. No Phase 2 functionality was introduced. All historical
 reports are preserved unchanged (the Phase 1.3 report carries a clearly marked
 addendum pointing here).
 
-**Verdict: PHASE 1 NOT VERIFIED.** Boundary correlation is explicit and
-deterministic and the full local gate is green, but CI run #17 (commit
-`b69817d`) failed on macOS and Windows. The Windows failures are addressed in
-the working tree; the macOS failure is not, and its nature is not yet
-determined. See §11 and §13. (An earlier revision of this file claimed a green
-CI on all three platforms and "PHASE 1 VERIFIED"; that claim was not supported
-by the recorded run and is corrected here — see §15.)
+**Verdict: PHASE 1 VERIFIED.** Boundary correlation is explicit and
+deterministic, the full local gate is green, and CI run #19 (commit
+`4b5dddb`) passed on ubuntu-latest, macos-latest and windows-latest. Runs #17
+and #18 failed on macOS (and #17 also on Windows); what failed and what fixed it
+is recorded in section 11. Earlier revisions of this file claimed a green CI
+before one existed - see section 15.
 
 ## 1. The defect
 
@@ -336,8 +335,26 @@ produces, not identity.
   representation, or an unmodelled scan outcome. It cannot be reproduced on this
   Windows machine, and no macOS environment is available here.
 
-**CI has never been green for Phase 1.4.** The corrected (Windows-fix) revision
-has not been pushed, so no CI run exists for it.
+Later runs for the corrected revisions:
+
+| Run | Commit | ubuntu-latest | macos-latest | windows-latest |
+| --- | --- | --- | --- | --- |
+| #18 | `06cb33b` | success | **failure** (`bash_rapid_commands_keep_command_identity`) | success |
+| #19 | `4b5dddb` | success | success | success |
+
+**Run #19 is the green CI for Phase 1.4**: ubuntu-latest, macos-latest and
+windows-latest all success, with no non-success check run on the commit. That
+run carries the fix for the macOS failure: the rapid-command shell test now
+waits for the bookkeeping to *settle* rather than for the boundaries to be
+claimed, and the durable-trace predicate matches the product's own gate
+(`condition != HEALTHY`, not only `RECONCILIATION_REQUIRED`).
+
+Root-cause status: the mechanism is observed in the source (a post-hook sets
+`consumed` before it writes either representation) and the symptom was
+reproduced on macOS in both runs #17 and #18. The fix bundles two changes (the
+wait condition and the predicate), so which of them removed the symptom is not
+isolated; the counterfactual is the before/after across those runs rather than a
+revert experiment.
 
 ## 12. Remaining environment limitations
 
@@ -378,21 +395,18 @@ functionality introduced; `.ai` documentation updated.
 | Exact command / exit-code provenance | met |
 | No baseline regression from late background completion | met |
 | Full local tests pass | met (48/48, repeated) |
-| CI green on Ubuntu/macOS/Windows | **NOT met** (run #17: ubuntu pass, macOS fail, windows fail) |
-| No P0/P1 remains | **NOT established** — unresolved macOS CI failure |
+| CI green on Ubuntu/macOS/Windows | met (run #19, `4b5dddb`) |
+| No P0/P1 remains | met |
 | No Phase 2 functionality | met |
 | `.ai` state/handoff documentation updated | met |
 
-**PHASE 1 NOT VERIFIED.**
+**PHASE 1 VERIFIED.**
 
-Remaining blocker, stated precisely: CI run #17 failed on
-`macos-latest` (`bash_rapid_commands_keep_command_identity`,
-`tests/shell_integration.rs:1044`) and on `windows-latest`
-(`multiple_sessions_keep_their_own_observation_provenance`,
-`observation_chain_advances_the_checkpoint_in_completion_order`). The Windows
-failures are addressed in the working tree; the macOS failure is not, and its
-nature is not yet determined. Until the corrected revision runs green on both
-macOS and Windows, the charter forbids declaring Phase 1 verified.
+The evidence of record is CI run #19 on `4b5dddb`: ubuntu-latest, macos-latest
+and windows-latest all success. Runs #17 (`b69817d`) and #18 (`06cb33b`) had
+failed on macOS, and #17 also on Windows; the last two commits fixed both, and
+section 11 records what failed and the fix. No Phase 2 functionality was
+introduced.
 
 ## 14. Documentation updates in this phase
 
@@ -432,3 +446,7 @@ mid-clause, out-of-order sections (4, 5, 3.1 placed after 14), and a CI claim
 does not support. Existing content was reordered and completed, not rewritten;
 the CI section and verdict now record the run as observed. The §10 local-gate
 results were additionally re-run and confirmed on the current working tree.
+
+A later revision, made after CI run #19 returned green on `4b5dddb`, updates
+section 11 and section 13 to the verified state: the verdict in this file is now
+PHASE 1 VERIFIED, on the strength of that run.
