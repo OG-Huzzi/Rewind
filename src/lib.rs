@@ -10,6 +10,7 @@ pub mod plan;
 pub mod rollback;
 pub mod scan;
 pub mod ui;
+pub mod watch;
 pub mod workspace;
 
 pub use error::{Result, RewindError};
