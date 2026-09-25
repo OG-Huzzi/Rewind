@@ -101,9 +101,47 @@ pub enum Command {
     },
     /// The minimum read-only interactive surface (Phase 2).
     Ui,
+    /// Advisory continuous observation (Phase 3). The watcher is never
+    /// authoritative; see `.ai/PHASE_3_CONTINUOUS_OBSERVATION.md`.
+    Watch {
+        #[command(subcommand)]
+        command: WatchCommand,
+    },
     Hook {
         #[command(subcommand)]
         command: HookCommand,
+    },
+}
+
+/// Advisory continuous observation (Phase 3). `start` refuses a second
+/// watcher, records any unobserved restart gap, and spawns the detached
+/// loop; `status` is read-only; `stop` is a bounded, signal-free stop.
+#[derive(Debug, Subcommand)]
+pub enum WatchCommand {
+    Start {
+        /// Run the watcher loop in this process instead of detaching.
+        #[arg(long)]
+        foreground: bool,
+        /// Coalescing/batch window in milliseconds (50..5000).
+        #[arg(long)]
+        batch_ms: Option<u64>,
+    },
+    /// Read-only lifecycle and coverage report. Exit 3 when operator action
+    /// is needed.
+    Status {
+        /// Emit JSON: the interface of record for machine consumers.
+        #[arg(long)]
+        json: bool,
+    },
+    Stop,
+    /// The detached watcher loop itself; spawned by `start`. Running it
+    /// directly skips the restart-gap check that `start` performs.
+    #[command(hide = true)]
+    Serve {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        batch_ms: Option<u64>,
     },
 }
 
@@ -212,7 +250,14 @@ pub fn run(cli: Cli) -> Result<i32> {
             let workspace = open_workspace()?;
             let _lease = WorkspaceLease::acquire(&workspace, false)?;
             crate::rollback::recover_locked(&workspace)?;
+            // Consume any pending bypass/watcher-degradation markers before
+            // the scan so a successful reconciliation leaves no stale gate
+            // behind (Phase 3 §12).
+            workspace.enforce_pending_safety_gate()?;
             let state = workspace.reconcile_locked("explicit reconciliation")?;
+            // The authoritative scan has observed everything; reset the
+            // advisory "what may have changed" index. Best-effort by design.
+            crate::watch::clear_dirty_index(&workspace.storage.project_root);
             println!("reconciled {state}");
             Ok(0)
         }
@@ -220,7 +265,12 @@ pub fn run(cli: Cli) -> Result<i32> {
             let workspace = open_workspace()?;
             let _lease = WorkspaceLease::acquire(&workspace, false)?;
             if reconcile {
+                // Consume pending bypass/watcher markers before the
+                // reconciling exit so the final state carries no stale gate
+                // (Phase 3 §12).
+                workspace.enforce_pending_safety_gate()?;
                 let state = crate::rollback::recover_reconcile(&workspace)?;
+                crate::watch::clear_dirty_index(&workspace.storage.project_root);
                 println!("recovered {state}");
                 return Ok(0);
             }
@@ -363,7 +413,22 @@ pub fn run(cli: Cli) -> Result<i32> {
         Command::Apply { command } => apply(command),
         Command::Ui => ui(),
         Command::Doctor => doctor(),
+        Command::Watch { command } => watch_command(command),
         Command::Hook { command } => passive_hook(command),
+    }
+}
+
+/// Dispatch for the Phase 3 watch commands. Exit codes follow the house
+/// convention: 0 ok, 3 blocked / needs operator action, 1 unexpected error.
+fn watch_command(command: WatchCommand) -> Result<i32> {
+    match command {
+        WatchCommand::Start {
+            foreground,
+            batch_ms,
+        } => crate::watch::start(&env::current_dir()?, foreground, batch_ms),
+        WatchCommand::Status { json } => crate::watch::status(&env::current_dir()?, json),
+        WatchCommand::Stop => crate::watch::stop(&env::current_dir()?),
+        WatchCommand::Serve { root, batch_ms } => crate::watch::serve(&root, batch_ms),
     }
 }
 

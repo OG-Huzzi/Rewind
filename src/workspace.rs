@@ -448,6 +448,11 @@ impl Workspace {
                 baseline.as_deref(),
             )?;
         }
+        // Phase 3: pending watcher degradations (overflow, restart gap,
+        // adapter failure, dirty-cap) gate the workspace exactly like bypass
+        // markers do — the interval becomes unknown until reconciliation
+        // closes it. The watcher itself never performs this step.
+        crate::watch::enforce_watch_degradations(self)?;
         Ok(())
     }
 
