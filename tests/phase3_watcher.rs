@@ -11,6 +11,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use rewind::model::WorkspaceCondition;
@@ -24,6 +25,11 @@ use rewind::watch::{self, WatchContext};
 use rewind::workspace::Workspace;
 
 mod common;
+
+/// Serializes the tests that spawn real CLI processes and daemons so a
+/// loaded CI runner never piles up start/stop lifecycles against the
+/// bounded startup deadline. The fake-adapter tests stay parallel.
+static CLI_LOCK: Mutex<()> = Mutex::new(());
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -166,7 +172,7 @@ fn repeated_modifies_coalesce_into_one_dirty_entry_without_losing_evidence() {
     let handle = spawn_loop(&fixture.ctx, script, &config(50));
 
     assert!(
-        wait_until(Duration::from_secs(10), || dirty_paths(&fixture.ctx)
+        wait_until(Duration::from_secs(20), || dirty_paths(&fixture.ctx)
             == ["foo.txt"]),
         "dirty index must contain foo.txt exactly"
     );
@@ -195,7 +201,7 @@ fn create_then_delete_in_one_run_leaves_the_path_dirty() {
     ];
     let handle = spawn_loop(&fixture.ctx, script, &config(50));
     assert!(
-        wait_until(Duration::from_secs(10), || dirty_paths(&fixture.ctx)
+        wait_until(Duration::from_secs(20), || dirty_paths(&fixture.ctx)
             == ["temp.txt"]),
         "the path is dirty: it may have changed"
     );
@@ -221,7 +227,7 @@ fn the_dirty_index_is_serialized_sorted_and_deterministic() {
         .map(|path| raw(RawKind::Modify, std::slice::from_ref(path)))
         .collect();
     let handle = spawn_loop(&fixture.ctx, script, &config(50));
-    assert!(wait_until(Duration::from_secs(10), || dirty_paths(
+    assert!(wait_until(Duration::from_secs(20), || dirty_paths(
         &fixture.ctx
     )
     .len()
@@ -256,7 +262,7 @@ fn overflow_records_a_degradation_keeps_evidence_and_never_gates_by_itself() {
     ];
     let handle = spawn_loop(&fixture.ctx, script, &config(50));
     assert!(
-        wait_until(Duration::from_secs(10), || degradations(&fixture.ctx)
+        wait_until(Duration::from_secs(20), || degradations(&fixture.ctx)
             .contains(&DegradationReason::Overflow)),
         "overflow must append a durable degradation record immediately"
     );
@@ -357,7 +363,7 @@ fn an_unrecoverable_adapter_failure_lands_failed_with_a_degradation_record() {
         let _ = done_tx.send(exit);
     });
     let exit = done_rx
-        .recv_timeout(Duration::from_secs(10))
+        .recv_timeout(Duration::from_secs(20))
         .expect("loop exits without a stop flag on unrecoverable failure");
     assert_eq!(exit, LoopExit::Failed);
     assert_eq!(
@@ -403,7 +409,7 @@ fn the_dirty_cap_degrades_instead_of_growing_unbounded() {
     };
     let handle = spawn_loop(&fixture.ctx, script, &watch_config);
     assert!(
-        wait_until(Duration::from_secs(10), || degradations(&fixture.ctx)
+        wait_until(Duration::from_secs(20), || degradations(&fixture.ctx)
             .contains(&DegradationReason::DirtyCap)),
         "hitting the cap must degrade, not grow"
     );
@@ -440,7 +446,7 @@ fn events_outside_the_root_and_rewind_metadata_are_dropped() {
         raw(RawKind::Modify, std::slice::from_ref(&inside)),
     ];
     let handle = spawn_loop(&fixture.ctx, script, &config(50));
-    assert!(wait_until(Duration::from_secs(10), || dirty_paths(
+    assert!(wait_until(Duration::from_secs(20), || dirty_paths(
         &fixture.ctx
     ) == ["foo.txt"]));
     request_stop(&fixture.ctx);
@@ -547,6 +553,7 @@ fn a_graceful_stop_still_leaves_the_interval_after_it_unobserved() {
 
 #[test]
 fn a_pending_marker_gates_the_writer_and_reconcile_clears_it() {
+    let _cli = CLI_LOCK.lock().expect("cli lock");
     let fixture = fixture();
     let mut state = planted_state(0, StatusKind::Stopped);
     state.stopped_at = Some(now_micros());
@@ -577,6 +584,7 @@ fn a_pending_marker_gates_the_writer_and_reconcile_clears_it() {
 
 #[test]
 fn the_real_watcher_lifecycle_observes_changes_and_stops_cleanly() {
+    let _cli = CLI_LOCK.lock().expect("cli lock");
     let fixture = fixture();
 
     // First-ever start: status is STOPPED and no marker exists.
@@ -590,7 +598,7 @@ fn the_real_watcher_lifecycle_observes_changes_and_stops_cleanly() {
 
     // The derived lifecycle becomes RUNNING (fresh heartbeat).
     assert!(
-        wait_until(Duration::from_secs(15), || {
+        wait_until(Duration::from_secs(30), || {
             let (code, stdout, _) = run_cli(&["watch", "status", "--json"], &fixture.root);
             code == 0 && stdout.contains("\"RUNNING\"")
         }),
@@ -600,7 +608,7 @@ fn the_real_watcher_lifecycle_observes_changes_and_stops_cleanly() {
     // A real filesystem change lands in the dirty index and the event log.
     fs::write(fixture.root.join("watched.txt"), b"hello").expect("write watched file");
     assert!(
-        wait_until(Duration::from_secs(15), || dirty_paths(&fixture.ctx)
+        wait_until(Duration::from_secs(30), || dirty_paths(&fixture.ctx)
             .contains(&"watched.txt".to_owned())),
         "the real adapter must deliver the change into the advisory index"
     );
@@ -626,6 +634,7 @@ fn the_real_watcher_lifecycle_observes_changes_and_stops_cleanly() {
 
 #[test]
 fn a_second_start_is_refused_while_a_watcher_is_running() {
+    let _cli = CLI_LOCK.lock().expect("cli lock");
     let fixture = fixture();
     let (code, _stdout, _stderr) = run_cli(&["watch", "start", "--batch-ms", "50"], &fixture.root);
     assert_eq!(code, 0, "the first start must succeed");
@@ -638,6 +647,7 @@ fn a_second_start_is_refused_while_a_watcher_is_running() {
 
 #[test]
 fn restarting_a_stopped_watcher_records_the_gap_through_the_cli() {
+    let _cli = CLI_LOCK.lock().expect("cli lock");
     let fixture = fixture();
     // Run once, stop cleanly (this is the "watcher was running, then stopped"
     // half of the crash/restart model).

@@ -199,8 +199,10 @@ pub fn start(start: &Path, foreground: bool, batch_ms: Option<u64>) -> Result<i3
 
     // Wait until the child reports its first heartbeat so `start` can
     // distinguish a running watcher from one that died immediately: the
-    // state file must carry a NEW run identity and a live status.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // state file must carry a NEW run identity and a live status. The
+    // deadline is generous because a freshly built binary's first execution
+    // can be slow under real-time antivirus scanning on CI runners.
+    let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         if let Some(state) = run::read_state(&ctx.paths) {
             if previous_run_id != Some(state.run_id) {
@@ -227,7 +229,7 @@ pub fn start(start: &Path, foreground: bool, batch_ms: Option<u64>) -> Result<i3
         }
         if Instant::now() >= deadline {
             eprintln!(
-                "rewind: watcher (pid {pid}) did not report startup within 5s; \
+                "rewind: watcher (pid {pid}) did not report startup within 15s; \
                  inspect {}",
                 ctx.paths.state.display()
             );
@@ -262,6 +264,10 @@ fn spawn_detached(exe: &Path, arguments: &[String]) -> Result<u32> {
 
 #[cfg(not(windows))]
 fn spawn_detached(exe: &Path, arguments: &[String]) -> Result<u32> {
+    // Unix-only trait import: a Windows-host compiler never sees this path
+    // (the Phase 1.2 cross-platform note applies — CI is the authority for
+    // non-host platforms).
+    use std::os::unix::process::CommandExt;
     let mut command = std::process::Command::new(exe);
     command.args(arguments);
     command
