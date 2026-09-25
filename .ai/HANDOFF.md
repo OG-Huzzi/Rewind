@@ -1,3 +1,67 @@
+# Phase 3 Implementation Handoff
+
+Status: Phase 3 (continuous observation) implemented and verified locally —
+all gates green on x86_64-pc-windows-gnu (fmt, check, clippy -D warnings,
+full suite **119 passed / 0 failed**: 48 Phase 1 and 15 Phase 2 tests
+unchanged plus 43 new Phase 3 tests); CI confirmation is **pending the
+owner push** (the agent shell cannot push), per
+`.ai/PHASE_3_VERIFICATION_REPORT.md`. Phase 2 and Phase 1 handoff content
+is preserved below unchanged.
+
+## -3. Phase 3 watcher invariants (do not regress)
+
+- The watcher is **advisory only**, and this is structural, not a promise:
+  `src/watch/` never opens the catalog, never acquires `WorkspaceLease`,
+  and never writes inside the workspace root. Its only durable outputs are
+  `state.json`, `events.log(.1)`, `dirty.json`, `degraded.json`, and
+  `stop.flag` under `<store>/projects/<id>/watch/`. No code path may read
+  a watcher artifact as authoritative state.
+- A watcher event means *"this path may have changed"* — nothing more. The
+  `FsEvent` model has no command/boundary/session field by construction
+  (§14): filesystem events never prove attribution. The only attribution
+  mechanisms remain strong capture and the Phase 1.4 boundary protocol.
+- Every watcher failure mode (adapter overflow, adapter failure, dirty-cap,
+  restart gap) appends a **durable degradation record immediately**
+  (`degraded.json`, atomic write). The catalog-level unknown interval is
+  opened by the next lease-holding enforcement point —
+  `enforce_watch_degradations` inside `enforce_pending_safety_gate` — and
+  the marker is removed only after the interval and the
+  RECONCILIATION_REQUIRED gate are durable. The watcher itself never gates
+  the workspace and never closes an interval.
+- **Any prior watcher run ⇒ unobserved gap.** `watch start` writes a
+  `WATCHER_GAP` record spanning the previous run's last durable heartbeat
+  (or `stopped_at`) to now — including after a graceful stop — before any
+  new coverage is claimed. A first-ever start records nothing (no coverage
+  was claimed before). Only `reconcile_locked` closes the interval.
+- The serve loop does no scans, no hashing, no CAS work. Memory is bounded
+  by the dirty cap (100 000 paths; past it the watcher degrades instead of
+  growing), the event log rotates at 8 MiB, and heartbeats are at most one
+  atomic write per 2 s. Coalescing appends raw evidence to `events.log`
+  first — coalescing must never erase evidence.
+- Watcher scope == scanner scope: the recursive tree under the canonical
+  root excluding the root `.rewind` directory. Event paths are confined
+  with the existing `src/paths.rs` helpers (`normalize_relative`); escapes
+  are dropped and counted, never followed or expanded. Do not add a second
+  path-security implementation.
+- The passive hooks (§13) and the Phase 1.4/1.3 invariants below are
+  untouched by the watcher and must stay that way: no hook code may join
+  with watcher evidence, and no watcher event may carry a boundary id.
+- The detached spawn on Windows is a raw `CreateProcessW` with
+  `bInheritHandles = FALSE` (`src/watch/detach_windows.rs` — the crate's
+  second documented `unsafe` site, alongside `reparse_tag` in
+  `src/scan.rs`). Rationale: std always spawns with `bInheritHandles =
+  TRUE` and offers no restriction API (rust-lang/rust#73281), so a daemon
+  spawned via `std::process::Command` would inherit the caller's stdout
+  pipe and hang every pipe-captured invocation forever. Do not replace it
+  with a `Command` spawn.
+- Lifecycle derivation (`src/watch/lifecycle.rs`): pending degradations
+  dominate as RECONCILIATION_REQUIRED; a stale heartbeat means `FAILED`,
+  never a fabricated `RUNNING`; liveness is heartbeat-derived (no pid
+  queries). `watch status` is read-only; `watch stop` is bounded and
+  signal-free (no pid kill).
+
+---
+
 # Phase 1.4 Implementation Handoff
 
 Status: Phase 1.4 (passive boundary identity) complete and CI-verified

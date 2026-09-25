@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Phase 3 — continuous observation (verified locally; CI pending push):
+  added the optional advisory watcher under `src/watch/` — platform-neutral
+  `FsEvent` model, inotify/FSEvents/ReadDirectoryChangesW adapters behind
+  an `EventAdapter` trait plus a deterministic fake adapter, a serve loop
+  with batching, bounded coalescing into a dirty-path index, raw-evidence
+  event log with rotation, heartbeat lifecycle, and durable degradation
+  records. Added `rewind watch start/status/stop`. Any prior watcher run
+  (including a graceful stop) records an unobserved gap on restart;
+  overflow, adapter failure, and the dirty cap degrade immediately and are
+  converted into unknown intervals + RECONCILIATION_REQUIRED by the
+  existing single-writer enforcement points, closable only by
+  reconciliation. The watcher never opens the catalog, takes no lease, and
+  never writes inside the workspace. Windows detachment uses a raw
+  `CreateProcessW` with `bInheritHandles = FALSE` because std cannot
+  restrict handle inheritance (rust-lang/rust#73281) — without it a
+  pipe-captured `rewind watch start` hangs forever. Full suite 119
+  passed / 0 failed; all Phase 1/2 suites unchanged.
 - Began Phase 1 implementation after the locked Phase 0.7 contract.
 - Recorded the implementation map and verification environment.
 - Added the external workspace store, SQLite catalog, typed manifests, BLAKE3

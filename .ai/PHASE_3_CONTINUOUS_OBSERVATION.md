@@ -174,9 +174,22 @@ degraded.json   pending degradation records (atomic write; consumed by
 stop.flag       stop request, polled by the loop (portable, no signals)
 ```
 
-- `start` spawns a detached `rewind watch serve --root <root>` child
-  (own process group on POSIX, detached/no-window on Windows);
+- `start` spawns a detached `rewind watch serve --root <root>` child;
   `--foreground` runs the loop in-process for terminals and tests.
+  Detachment must guarantee that the daemon never inherits the caller's
+  stdio pipe handles: with a plain `std::process::Command` spawn the child
+  inherits every inheritable handle of the caller on Windows
+  (the standard library always spawns with `bInheritHandles = TRUE` and
+  offers no restriction API; rust-lang/rust#73281), so a daemon holding a
+  command substitution's stdout pipe would hang every pipe-captured
+  invocation (`$(rewind watch start)`, `Command::output()`) forever. On
+  Windows the spawn is therefore one documented `CreateProcessW` call with
+  `bInheritHandles = FALSE` and NUL std handles (the same minimal-FFI
+  precedent as the reparse-tag reader in `src/scan.rs`); on POSIX the
+  standard-library spawn with null stdio replaces descriptors 0/1/2 via
+  `dup2` — which closes the caller's stdio pipes in the child — and
+  `process_group(0)` detaches the terminal's group. Residual limitation:
+  POSIX descriptors above 2 inherited by the caller are not closed.
 - `stop` writes `stop.flag`; the loop exits within one batch window and
   writes a final `STOPPED` state. `stop` waits a bounded time and reports
   honestly if the watcher does not stop; it does not kill by pid.

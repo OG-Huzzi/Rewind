@@ -1,7 +1,59 @@
 # Phase 1 Test Status
 
-Status after Phase 1.3 (passive hook isolation and final verification).
-Historical Phase 1.1 status is preserved at the bottom.
+Status after Phase 3 (continuous observation). The Phase 3 record is at the
+top; the Phase 1.3 status is preserved below.
+
+**Full suite after Phase 3: 119 passed / 0 failed** (`cargo test
+--all-targets`, x86_64-pc-windows-gnu, Rust 1.98.1, bash on PATH so the
+shell-integration tests ran rather than skipped): 41 lib unit tests (13
+Phase 2 + 28 Phase 3), 10 boundary_correlation, 13 foundation, 8 hardening,
+15 phase2_dependency, 9 rollback_tree, 8 shell_integration — every Phase 1/2
+suite unchanged and green — plus the new **15 `phase3_watcher`** tests.
+
+Phase 3 tests prove, beyond "it runs" (details and evidence in
+`.ai/PHASE_3_VERIFICATION_REPORT.md` §5-6):
+
+- **Overflow is injected through a deterministic fake adapter** (contract
+  §16): the degradation record is durable immediately, the dirty set
+  survives, the watcher marks itself degraded, the next writer opens the
+  unknown interval naming the reason, reconcile closes it and consumes the
+  marker, and the watcher alone never gates anything.
+- Coalescing collapses duplicates into the dirty index while the raw event
+  log keeps every event (evidence is never erased); create+delete leaves
+  the path dirty; the index serialization is sorted and byte-identical for
+  identical inputs.
+- The dirty cap degrades instead of growing; events outside the canonical
+  root and under `.rewind` are dropped and counted as anomalies.
+- Crash/restart and offline semantics: a 13-minute-dead watcher produces a
+  `WATCHER_GAP` spanning last-heartbeat→now that gates the next writer and
+  closes only via reconcile; a graceful stop leaves everything after it
+  unobserved; a first-ever start records nothing.
+- Isolation: across a serve loop with events, `metadata.sqlite` is
+  byte-identical and the workspace tree fingerprint-identical — the
+  watcher writes nothing outside its own store directory.
+- Real-adapter lifecycle through the CLI: detached start (which must not
+  hang pipe-captured invocations — see the verification report's D2),
+  RUNNING via fresh heartbeat, a real file write landing in the index and
+  event log, a concurrent writer with no lease interference, bounded stop,
+  second-start refusal, and a dead watcher reporting FAILED.
+- Measured (contract §16, debug build, NTFS): idle CPU 15.6 ms over 10 s;
+  event→index latency 113–208 ms at a 250 ms batch; ~150 bytes per raw
+  event; ~19 bytes per dirty path.
+
+Known gaps that remain verification work, not passing claims:
+
+- **CI has not run for Phase 3** (no push from the agent shell); green CI
+  on ubuntu/macos/windows for the pushed commit is the remaining gate.
+- Platform overflow was injected through the fake adapter, not induced on
+  real hardware; the real-adapter overflow path is exercised only by
+  construction (the `Rescan` flag mapping), matching the contract's
+  allowance for deterministic injection.
+- Real power-loss durability of watcher artifacts is not claimed (they are
+  advisory; the catalog and journals remain the durable records).
+
+---
+
+## Phase 1.3 status (historical)
 
 The suite uses real temporary workspaces, real filesystem mutations, real
 subprocess writers, and real crash simulation. No mocked filesystems.
