@@ -112,6 +112,15 @@ pub fn map_notify_event(event: &notify::Event) -> Vec<RawEvent> {
 pub struct NotifyAdapter {
     watcher: Option<notify::RecommendedWatcher>,
     receiver: mpsc::Receiver<notify::Result<notify::Event>>,
+    /// Raw events already mapped from received notifications but not yet
+    /// returned by [`NotifyAdapter::poll`]. A single notification can carry
+    /// several paths (FSEvents batches; the mapper fans them out), and the
+    /// adapter's API returns one event per poll, so the remainder must be
+    /// retained here — dropping them would silently discard changes the
+    /// platform already delivered. The queue drains on every poll, so it
+    /// holds at most one notification's worth of mapped events between
+    /// polls; it is never a new unbounded buffer.
+    pending: VecDeque<RawEvent>,
     root: PathBuf,
 }
 
@@ -129,6 +138,7 @@ impl NotifyAdapter {
         Ok(Self {
             watcher: Some(watcher),
             receiver,
+            pending: VecDeque::new(),
             root: root.to_path_buf(),
         })
     }
@@ -136,7 +146,12 @@ impl NotifyAdapter {
     /// Recreates the platform watcher after overflow or failure, so
     /// observation can resume for everything after this point. The
     /// degradation record for *why* the restart was needed has already been
-    /// written by the loop before this is called.
+    /// written by the loop before this is called. Raw events received from
+    /// the old watcher stay queued and are delivered on subsequent polls:
+    /// they were real notifications, and discarding them would recreate
+    /// exactly the silent-loss behavior this queue exists to prevent. The
+    /// degradation record, not the queue, is what keeps the covered
+    /// interval unknown.
     pub fn restart_watcher(&mut self) -> Result<()> {
         self.watcher = None;
         let (sender, receiver) = mpsc::channel();
@@ -152,6 +167,11 @@ impl NotifyAdapter {
 
 impl EventAdapter for NotifyAdapter {
     fn poll(&mut self, timeout: Duration) -> AdapterOutput {
+        // Queued events are delivered before polling for more
+        // notifications, preserving the underlying notification order.
+        if let Some(raw) = self.pending.pop_front() {
+            return AdapterOutput::Event(raw);
+        }
         match self.receiver.recv_timeout(timeout) {
             Ok(Ok(event)) => {
                 if event.need_rescan() {
@@ -161,10 +181,12 @@ impl EventAdapter for NotifyAdapter {
                 if events.is_empty() {
                     AdapterOutput::Idle
                 } else {
-                    // One raw event per poll keeps the loop's accounting
-                    // simple; the channel drains fast enough at batch
-                    // granularity.
-                    AdapterOutput::Event(events.into_iter().next().expect("non-empty"))
+                    // Every mapped event must reach the pipeline: return the
+                    // first and retain the rest for the following polls.
+                    let mut mapped: VecDeque<_> = events.into();
+                    let first = mapped.pop_front().expect("non-empty");
+                    self.pending.extend(mapped);
+                    AdapterOutput::Event(first)
                 }
             }
             Ok(Err(error)) => AdapterOutput::Failed(error.to_string()),
@@ -301,5 +323,197 @@ mod tests {
         ));
         assert!(matches!(adapter.poll(Duration::ZERO), AdapterOutput::Idle));
         adapter.shutdown();
+    }
+
+    /// Builds the production adapter with a controllable notification
+    /// channel (no platform watcher), so `poll` — the real production code
+    /// path — can be driven deterministically.
+    fn production_adapter() -> (NotifyAdapter, mpsc::Sender<notify::Result<notify::Event>>) {
+        let (sender, receiver) = mpsc::channel();
+        let adapter = NotifyAdapter {
+            watcher: None,
+            receiver,
+            pending: VecDeque::new(),
+            root: PathBuf::from("/w"),
+        };
+        (adapter, sender)
+    }
+
+    /// Regression (audit bug #1): a notification carrying several paths used
+    /// to lose every mapped event after the first. Every mapped event must
+    /// be emitted — exactly once, in notification order — and the queue must
+    /// drain to Idle afterwards.
+    #[test]
+    fn poll_delivers_every_path_of_a_batched_notification() {
+        let (mut adapter, sender) = production_adapter();
+        sender
+            .send(Ok(event(
+                EventKind::Create(CreateKind::Any),
+                &["/w/a.txt", "/w/b.txt", "/w/c.txt"],
+            )))
+            .expect("send");
+
+        let expected = ["/w/a.txt", "/w/b.txt", "/w/c.txt"];
+        for expected_path in expected {
+            match adapter.poll(Duration::ZERO) {
+                AdapterOutput::Event(raw) => {
+                    assert_eq!(raw.kind, RawKind::Create);
+                    assert_eq!(raw.paths, vec![PathBuf::from(expected_path)]);
+                }
+                other => panic!("expected an event for {expected_path}, got {other:?}"),
+            }
+        }
+        // Queue drained, channel empty: Idle, nothing duplicated.
+        assert!(matches!(adapter.poll(Duration::ZERO), AdapterOutput::Idle));
+    }
+
+    /// Queued events are delivered before polling for more notifications,
+    /// preserving the underlying notification order.
+    #[test]
+    fn queued_events_are_delivered_before_new_notifications() {
+        let (mut adapter, sender) = production_adapter();
+        sender
+            .send(Ok(event(
+                EventKind::Create(CreateKind::Any),
+                &["/w/a.txt", "/w/b.txt"],
+            )))
+            .expect("send first");
+        sender
+            .send(Ok(event(
+                EventKind::Modify(Mk::Data(DataChange::Any)),
+                &["/w/c.txt"],
+            )))
+            .expect("send second");
+
+        let order: Vec<(RawKind, String)> = (0..3)
+            .filter_map(|_| match adapter.poll(Duration::ZERO) {
+                AdapterOutput::Event(raw) => {
+                    Some((raw.kind, raw.paths[0].to_string_lossy().into()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                (RawKind::Create, "/w/a.txt".to_owned()),
+                (RawKind::Create, "/w/b.txt".to_owned()),
+                (RawKind::Modify, "/w/c.txt".to_owned()),
+            ],
+            "queued leftovers precede newly received notifications"
+        );
+    }
+
+    /// Overflow semantics are unchanged by the queue: a rescan notification
+    /// still reports Overflow, and events received *before* the rescan stay
+    /// queued and are delivered — they are real received evidence, and
+    /// dropping them would recreate the silent-loss behavior the queue
+    /// exists to prevent. The degradation record, not the queue, keeps the
+    /// covered interval unknown.
+    #[test]
+    fn rescan_still_reports_overflow_with_queued_events_pending() {
+        let (mut adapter, sender) = production_adapter();
+        sender
+            .send(Ok(event(
+                EventKind::Create(CreateKind::Any),
+                &["/w/a.txt", "/w/b.txt"],
+            )))
+            .expect("send event");
+        sender
+            .send(Ok(
+                notify::Event::new(EventKind::Other).set_flag(notify::event::Flag::Rescan)
+            ))
+            .expect("send rescan");
+
+        assert!(matches!(
+            adapter.poll(Duration::ZERO),
+            AdapterOutput::Event(_)
+        ));
+        assert!(matches!(
+            adapter.poll(Duration::ZERO),
+            AdapterOutput::Event(_)
+        ));
+        assert!(matches!(
+            adapter.poll(Duration::ZERO),
+            AdapterOutput::Overflow
+        ));
+        assert!(matches!(adapter.poll(Duration::ZERO), AdapterOutput::Idle));
+    }
+
+    /// Full production ingestion path: the real `NotifyAdapter::poll`
+    /// (channel-fed), the real serve loop, confinement, coalescing, and
+    /// both downstream artifacts — every path of a batched notification
+    /// must reach the dirty index and the event log exactly once.
+    #[test]
+    fn serve_loop_ingests_every_path_of_a_batched_notification() {
+        use crate::watch::run::{serve_loop, LoopExit, WatchConfig, WatchPaths};
+        use uuid::Uuid;
+
+        let root = tempfile::tempdir().expect("tempdir").keep();
+        let paths = WatchPaths::new(&root);
+        let (mut adapter, sender) = production_adapter();
+        // Re-root the adapter's confinement root at the real temp directory
+        // and send one batched notification carrying three paths.
+        let absolute: Vec<String> = ["a.txt", "b.txt", "c.txt"]
+            .iter()
+            .map(|name| root.join(name).to_string_lossy().into_owned())
+            .collect();
+        let mut batched = notify::Event::new(EventKind::Create(CreateKind::Any));
+        batched.paths = absolute.iter().map(PathBuf::from).collect();
+        sender.send(Ok(batched)).expect("send batched notification");
+
+        let loop_root = root.clone();
+        let loop_paths = paths.clone();
+        let workspace_id = Uuid::new_v4();
+        let watch_config = WatchConfig {
+            batch: Duration::from_millis(50),
+            ..WatchConfig::default()
+        };
+        let handle = std::thread::spawn(move || {
+            serve_loop(
+                &loop_paths,
+                &loop_root,
+                workspace_id,
+                &mut adapter,
+                &watch_config,
+            )
+            .expect("serve loop")
+        });
+
+        let dirty_path = paths.dirty.clone();
+        let events_path = paths.events.clone();
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Ok(index) = std::fs::read_to_string(&dirty_path) {
+                if let Ok(index) = serde_json::from_str::<crate::watch::model::DirtyIndex>(&index) {
+                    let expected: Vec<String> = ["a.txt", "b.txt", "c.txt"]
+                        .iter()
+                        .map(|name| name.to_string())
+                        .collect();
+                    if index.paths.into_iter().collect::<Vec<_>>() == expected {
+                        break;
+                    }
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "all three paths must reach the dirty index"
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        }
+
+        crate::paths::atomic_write(&paths.stop_flag, b"stop\n").expect("stop flag");
+        assert_eq!(handle.join().expect("join"), LoopExit::Stopped);
+
+        // The event log received every mapped event exactly once.
+        let log = std::fs::read_to_string(&events_path).expect("event log");
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            let count = log
+                .lines()
+                .filter(|line| line.contains(name) && line.contains("\"kind\":\"CREATE\""))
+                .count();
+            assert_eq!(count, 1, "{name} must appear exactly once in the log");
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

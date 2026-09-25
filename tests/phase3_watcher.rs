@@ -716,3 +716,45 @@ fn watch_status_reports_a_dead_watcher_as_failed_not_running() {
     assert!(stdout.contains("\"FAILED\""), "{stdout}");
     assert!(stdout.contains("restart"), "{stdout}");
 }
+
+// ---------------------------------------------------------------------------
+// Windows argument quoting: round-trip through a REAL child parser
+// ---------------------------------------------------------------------------
+
+/// The child the watcher spawns is a Rust program, whose `std::env::args`
+/// follows the MSVCRT parsing rules. This test serializes each case with
+/// the production `quote`, injects it verbatim into a real `rewind`
+/// process's command line (`raw_arg` — no re-quoting by std), and asserts
+/// from the child's own error output that it parsed the intended value.
+/// A broken quoting scheme (e.g. a trailing backslash eating the closing
+/// quote) glues or mangles the argument and the echo changes.
+#[test]
+#[cfg(windows)]
+fn windows_quoting_round_trips_through_a_real_child_parser() {
+    use rewind::watch::detach_windows::quote;
+    use std::os::windows::process::CommandExt;
+
+    let cases = [
+        "C:\\",
+        "\\\\?\\C:\\",
+        "C:\\ws\\",
+        "D:\\Program Files\\rewind.exe",
+        "a b c",
+        "has\"quote",
+        "dir\\\"x",
+        "",
+    ];
+    for value in cases {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_rewind"))
+            .arg("show")
+            .raw_arg(quote(value))
+            .output()
+            .expect("spawn rewind");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let expected = format!("invalid value '{value}'");
+        assert!(
+            stderr.contains(&expected),
+            "child parsed {value:?} incorrectly; stderr was:\n{stderr}"
+        );
+    }
+}
