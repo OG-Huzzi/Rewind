@@ -171,10 +171,18 @@ fn repeated_modifies_coalesce_into_one_dirty_entry_without_losing_evidence() {
         .collect();
     let handle = spawn_loop(&fixture.ctx, script, &config(50));
 
+    // Wait for the STRONGEST observable: all five raw events on the log.
+    // (Waiting for the dirty entry alone would race the loop — after the
+    // first event the index already looks final, and a stop could then
+    // legitimately cut the remaining events off.)
+    let log_path = fixture.ctx.paths.events.clone();
     assert!(
-        wait_until(Duration::from_secs(20), || dirty_paths(&fixture.ctx)
-            == ["foo.txt"]),
-        "dirty index must contain foo.txt exactly"
+        wait_until(Duration::from_secs(20), || {
+            fs::read_to_string(&log_path)
+                .map(|log| log.matches("\"kind\":\"MODIFY\"").count() == 5)
+                .unwrap_or(false)
+        }),
+        "all five raw events must be processed before the stop"
     );
     request_stop(&fixture.ctx);
     assert_eq!(handle.join().expect("join"), LoopExit::Stopped);
@@ -200,10 +208,18 @@ fn create_then_delete_in_one_run_leaves_the_path_dirty() {
         raw(RawKind::Delete, std::slice::from_ref(&path)),
     ];
     let handle = spawn_loop(&fixture.ctx, script, &config(50));
+    // Both endpoint events must be on the log before the stop: the dirty
+    // entry alone is already final after the first event.
+    let log_path = fixture.ctx.paths.events.clone();
     assert!(
-        wait_until(Duration::from_secs(20), || dirty_paths(&fixture.ctx)
-            == ["temp.txt"]),
-        "the path is dirty: it may have changed"
+        wait_until(Duration::from_secs(20), || {
+            fs::read_to_string(&log_path)
+                .map(|log| {
+                    log.contains("\"kind\":\"CREATE\"") && log.contains("\"kind\":\"DELETE\"")
+                })
+                .unwrap_or(false)
+        }),
+        "both endpoint events must be processed before the stop"
     );
     request_stop(&fixture.ctx);
     assert_eq!(handle.join().expect("join"), LoopExit::Stopped);
@@ -261,10 +277,18 @@ fn overflow_records_a_degradation_keeps_evidence_and_never_gates_by_itself() {
         raw(RawKind::Modify, std::slice::from_ref(&bar)),
     ];
     let handle = spawn_loop(&fixture.ctx, script, &config(50));
+    // Wait for the STRONGEST observable: the post-overflow event must be in
+    // the index before the stop. (Waiting for the degradation record alone
+    // races the loop — the record is written when the overflow arrives, and
+    // a stop could then legitimately cut the remaining event off. The
+    // degradation is appended before the loop polls the next event, so
+    // dirty-contains-bar implies the record is durable.)
     assert!(
-        wait_until(Duration::from_secs(20), || degradations(&fixture.ctx)
-            .contains(&DegradationReason::Overflow)),
-        "overflow must append a durable degradation record immediately"
+        wait_until(Duration::from_secs(20), || {
+            let dirty = dirty_paths(&fixture.ctx);
+            dirty.contains(&"foo.txt".to_owned()) && dirty.contains(&"bar.txt".to_owned())
+        }),
+        "the pre- and post-overflow events must both land in the index"
     );
     request_stop(&fixture.ctx);
     assert_eq!(handle.join().expect("join"), LoopExit::Stopped);
