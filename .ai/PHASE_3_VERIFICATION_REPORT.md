@@ -1,12 +1,14 @@
 # Phase 3 — Continuous Observation: Verification Report
 
-Status: implementation complete against the Phase 3 contract; **all local
-gates green on the Windows host (x86_64-pc-windows-gnu, Rust 1.98.1), full
-suite 119 passed / 0 failed, all Phase 1/2 suites unchanged. CI has not run:
-no Phase 3 commit has been pushed (the agent shell cannot push; same
-constraint recorded in the Phase 2 report §12). The CI clause of the
-verification gate is therefore PENDING OWNER PUSH and is recorded as such —
-it is the one open item in the technical verdict.**
+Status: implementation complete against the Phase 3 contract; **CI green on
+ubuntu-latest, macos-latest and windows-latest for the pushed commit.**
+
+**Verdict: PHASE 3 VERIFIED.** The verification gate (contract §15) is met
+by run #36111890265 on `d69fdca` (ubuntu 1m37s, macOS 1m42s,
+windows 5m37s; zero non-success check runs). Local gates on
+x86_64-pc-windows-gnu (Rust 1.98.1): fmt/check/clippy (-D warnings) clean,
+full suite **119 passed / 0 failed**, all 63 Phase 1/2 tests unchanged.
+Three CI rounds were needed; every round's finding is recorded in §9.
 
 ---
 
@@ -61,7 +63,7 @@ it is the one open item in the technical verdict.**
 | 11 | Determinism | done | sorted `BTreeSet` serialization test; no map iteration in artifacts |
 | 12 | Performance measured | done | §7 |
 | 13 | Documentation/state handoff | done | this report + CURRENT_STATE/HANDOFF/TEST_STATUS/TODO/CHANGELOG/README |
-| 14 | CI gate | **pending owner push** | §9 |
+| 14 | CI gate | done | §9: run #36111890265 on `d69fdca`, all three platforms |
 
 ---
 
@@ -183,7 +185,38 @@ from the non-canonical tempdir root (correctly confined away by the watcher
 — the tests were wrong, the product was right), and a hand-computed civil-
 date test constant.
 
-## 9. CI record and verdict
+## 9. CI record for Phase 3
+
+- **Run #36110312682** (commit `0e62dae`, first pushed Phase 3 head):
+  ubuntu and macOS **failed at Compile**; windows failed at Tests.
+  The POSIX compile failure was the Phase 1.2 trap verbatim: the detached
+  spawn's `process_group(0)` call needs the
+  `std::os::unix::process::CommandExt` trait in scope, which a
+  Windows-host compiler never sees. Fixed with a scoped import and a
+  comment citing that precedent (`eed94e5`).
+- **Run #36111212151** (`eed94e5`): ubuntu and macOS **success**; windows
+  failed at Tests — `overflow_records_a_degradation_keeps_evidence_and_
+  never_gates_by_itself` expected the post-overflow event in the dirty
+  index but saw only the pre-overflow one. Root cause: a race in the
+  **test**, not the product — three fake-adapter tests requested the stop
+  as soon as the FIRST observable appeared (the degradation record or the
+  first dirty entry), legitimately racing the loop and cutting the
+  remaining scripted events off. Locally the loop always won; on a loaded
+  runner the test won. The behavior is correct per contract (the
+  degradation record precedes the remaining events; stop is honored
+  immediately). The tests now wait for the strongest condition (all
+  scripted events on the log / both endpoints in the index) before
+  stopping (`d69fdca`). Windows robustness was additionally hardened in
+  the same commit: the detached-child startup deadline rose from 5 s to
+  15 s (fresh-binary first execution under real-time AV on runners) and
+  the four CLI/daemon-spawning tests serialize on a shared mutex.
+- **Run #36111890265** (`d69fdca`): ubuntu-latest 1m37s, macos-latest
+  1m42s, windows-latest 5m37s — **all success, zero non-success check
+  runs on the commit**. This is the CI evidence the verdict rests on.
+
+---
+
+## Verdict
 
 **Local gates (Windows host, x86_64-pc-windows-gnu, Rust 1.98.1):**
 
@@ -191,21 +224,18 @@ date test constant.
 - `cargo check --all-targets` — PASS
 - `cargo clippy --all-targets -- -D warnings` — PASS
 - `cargo test --all-targets` — **119 passed / 0 failed** (48 Phase 1 + 15
-  Phase 2 unchanged; 43 new Phase 3)
+  Phase 2 unchanged; 43 new Phase 3), plus the phase3 suite re-run five
+  consecutive times green after the race fix.
 
-**CI: NOT YET RUN.** The agent shell cannot push (Git Credential Manager
-cannot use its store from this process, as recorded in the Phase 2 report).
-The verification gate therefore stands at: local gates green; green CI on
-ubuntu-latest, macos-latest and windows-latest for the exact pushed commit
-**pending**. Per the same standard the Phase 2 report applied to itself
-before its push, the verdict is stated conditionally:
+**CI: run #36111890265 on `d69fdca` passed on ubuntu-latest, macos-latest
+and windows-latest with zero non-success check runs.** This is the
+evidence the verdict rests on.
 
-> **PHASE 3 VERIFIED LOCALLY; CI CONFIRMATION PENDING OWNER PUSH.** The
-> watcher is advisory-only by construction, every overflow/crash/offline
-> obligation is covered by a test that actually exercises it (fake-adapter
-> injection plus real-filesystem lifecycle), no Phase 1/2 invariant or
-> suite regressed, and the one product defect surfaced during verification
-> was root-caused and fixed with evidence.
+> **PHASE 3 VERIFIED.** The watcher is advisory-only by construction,
+> every overflow/crash/offline obligation is covered by a test that
+> actually exercises it (fake-adapter injection plus real-filesystem
+> lifecycle), no Phase 1/2 invariant or suite regressed, and both defects
+> surfaced during verification were root-caused and fixed with evidence.
 
 Known limitations (all documented in the contract): no command attribution
 from events, ever; the event log is capped evidence, not durable history;

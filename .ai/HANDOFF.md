@@ -1,12 +1,12 @@
 # Phase 3 Implementation Handoff
 
-Status: Phase 3 (continuous observation) implemented and verified locally —
-all gates green on x86_64-pc-windows-gnu (fmt, check, clippy -D warnings,
-full suite **119 passed / 0 failed**: 48 Phase 1 and 15 Phase 2 tests
-unchanged plus 43 new Phase 3 tests); CI confirmation is **pending the
-owner push** (the agent shell cannot push), per
-`.ai/PHASE_3_VERIFICATION_REPORT.md`. Phase 2 and Phase 1 handoff content
-is preserved below unchanged.
+Status: Phase 3 (continuous observation) complete and CI-verified
+(run #36111890265 on `d69fdca`: ubuntu, macOS and windows all green; final
+verdict in `.ai/PHASE_3_VERIFICATION_REPORT.md`). **Phase 3 is VERIFIED.**
+All local gates green (fmt, check, clippy -D warnings, full suite 119
+passed / 0 failed: 48 Phase 1 and 15 Phase 2 tests unchanged plus 43 new
+Phase 3 tests). Phase 2 and Phase 1 handoff content is preserved below
+unchanged.
 
 ## -3. Phase 3 watcher invariants (do not regress)
 

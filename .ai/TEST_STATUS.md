@@ -5,8 +5,12 @@ top; the Phase 1.3 status is preserved below.
 
 **Full suite after Phase 3: 119 passed / 0 failed** (`cargo test
 --all-targets`, x86_64-pc-windows-gnu, Rust 1.98.1, bash on PATH so the
-shell-integration tests ran rather than skipped): 41 lib unit tests (13
-Phase 2 + 28 Phase 3), 10 boundary_correlation, 13 foundation, 8 hardening,
+shell-integration tests ran rather than skipped), **and CI run #36111890265
+on `d69fdca` is green on ubuntu-latest, macos-latest and windows-latest**
+(after two earlier rounds surfaced one POSIX-only compile defect and three
+test-side wait races, both root-caused and fixed — see
+`.ai/PHASE_3_VERIFICATION_REPORT.md` §9): 41 lib unit tests (13 Phase 2 +
+28 Phase 3), 10 boundary_correlation, 13 foundation, 8 hardening,
 15 phase2_dependency, 9 rollback_tree, 8 shell_integration — every Phase 1/2
 suite unchanged and green — plus the new **15 `phase3_watcher`** tests.
 
@@ -42,8 +46,6 @@ Phase 3 tests prove, beyond "it runs" (details and evidence in
 
 Known gaps that remain verification work, not passing claims:
 
-- **CI has not run for Phase 3** (no push from the agent shell); green CI
-  on ubuntu/macos/windows for the pushed commit is the remaining gate.
 - Platform overflow was injected through the fake adapter, not induced on
   real hardware; the real-adapter overflow path is exercised only by
   construction (the `Rescan` flag mapping), matching the contract's

@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-- Phase 3 — continuous observation (verified locally; CI pending push):
+- Phase 3 — continuous observation (complete and CI-verified, run
+  #36111890265 on `d69fdca`):
   added the optional advisory watcher under `src/watch/` — platform-neutral
   `FsEvent` model, inotify/FSEvents/ReadDirectoryChangesW adapters behind
   an `EventAdapter` trait plus a deterministic fake adapter, a serve loop

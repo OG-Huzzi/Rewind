@@ -4,12 +4,13 @@ Rewind is a local-first workspace state and recovery tool that records command b
 
 ## Status
 
-Phase 3 (continuous observation) is implemented and locally verified
-(all gates green, 119 tests passing; CI confirmation pending push): the
-new advisory watcher observes filesystem activity between commands, and
-`.ai/PHASE_3_VERIFICATION_REPORT.md` carries the evidence. Phases 1
-(foundation through 1.4) and 2 (dependency-aware inspection) are complete
-and CI-verified on GitHub Actions for Ubuntu, macOS, and Windows (MSVC).
+Phase 3 (continuous observation) is complete and CI-verified on GitHub
+Actions for Ubuntu, macOS, and Windows: an optional advisory watcher
+observes filesystem activity between commands, and
+`.ai/PHASE_3_VERIFICATION_REPORT.md` carries the evidence (119 tests
+passing locally, all Phase 1/2 suites unchanged). Phases 1 (foundation
+through 1.4) and 2 (dependency-aware inspection) are complete and
+CI-verified.
 
 ## What it does today
 

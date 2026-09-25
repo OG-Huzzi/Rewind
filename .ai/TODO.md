@@ -26,4 +26,5 @@
       enforcement points.
 - [x] 15 integration + 28 unit tests; full suite 119/119; measured
       performance recorded in the verification report.
-- [ ] CI confirmation on ubuntu/macos/windows for the pushed commit.
+- [x] CI green on ubuntu/macos/windows for the pushed commit
+      (run #36111890265 on `d69fdca`, after two diagnostic rounds).
