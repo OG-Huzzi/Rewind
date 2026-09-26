@@ -179,3 +179,31 @@ semantics the model cannot support.
 - **Compatibility.** The serde variant is additive; every previously readable
   manifest stays readable. An old binary reading a new manifest fails with
   an explicit unknown-variant error — honest refusal, not corruption.
+
+## 13. Rollback performance phase (path-scoped step verification)
+
+The optimization replaced the two per-step full workspace scans in rollback
+with a fingerprint scan of exactly the affected path
+(`scan::scan_fingerprint_at`, ADR-018). Safety analysis:
+
+- **No safety-relevant behavior change.** The per-step scans' results were
+  consumed only as `manifest.get(path)` before the change; the path-scoped
+  scan computes the identical fingerprint through the scanner's shared
+  per-entry classification, so every decision input (idempotent
+  short-circuit, pre-conflict comparison, post-verification
+  `compatible_after`) receives the same value it always did. This equivalence
+  is asserted directly by a test comparing both observation paths across
+  every supported object type on each platform.
+- **Global deviation detection unchanged.** The final full-scan state
+  comparison (`state_id` must equal the target) remains the authoritative
+  check for any external interference anywhere in the workspace; the entry
+  scans and the planner are untouched. Unrelated-path scan errors now
+  surface at that final scan instead of aborting a step earlier — the same
+  `RecoveryRequired` abort class, later timing.
+- **Durability, quarantine, confinement untouched.** Journal writes happen
+  at exactly the same points under `synchronous = FULL`; quarantine-by-rename
+  and confinement verification are byte-for-byte the same code. Recovery
+  paths keep their full scans.
+- **Nothing is assumed unchanged between steps.** Each step re-observes its
+  path from the live filesystem; there is no caching, no watcher input, and
+  no trust of stale evidence.

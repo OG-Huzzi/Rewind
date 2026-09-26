@@ -32,6 +32,27 @@ full-scan state comparison, which is unchanged. The remaining ~75 s at 400
 files is journal durability (`synchronous = FULL`) plus actual mutations —
 explicitly out of scope.
 
+Scenario and payload variants (same harness and environment, post-optimization
+code, debug build; the harness grew `--scenario modify|create|delete|mixed`
+and scenario-aware final-state assertions, and every variant asserts exactly N
+rollback steps and the correct final content after redo):
+
+| Variant (N=100) | capture | UNDO | REDO |
+|---|---|---|---|
+| modify, payload 200 B | 0.93 s | 9.35 s | 13.24 s |
+| modify, payload 10 240 B | 1.81 s | 7.68 s | 7.88 s |
+| create 100 files | 1.21 s | 4.11 s | 3.69 s |
+| delete 100 files | 0.88 s | 2.84 s | 4.45 s |
+| mixed (34 deleted / 33 modified / 33 created) | 1.10 s | 4.55 s | 4.40 s |
+
+Reading: undo time tracks the *touched* work (steps) rather than total
+payload — a 51× payload increase leaves undo at the same order (9.35 s →
+7.68 s, within run-to-run noise on this machine), and create/delete/mixed
+land in the same seconds band as modify. Pre-optimization equivalents were
+not re-measured per scenario (the dominant cost — 2N+2 full scans — is
+scenario-independent and was measured directly in the modify table above);
+the harness's historical-model line reconstructs it from one bare scan.
+
 Suite after the change (Windows, debug): **152 passed / 0 failed**
 (`cargo test --all-targets`), including 3 new
 `tests/rollback_path_scan.rs` tests proving fingerprint equivalence across
