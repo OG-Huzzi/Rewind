@@ -87,15 +87,26 @@ mod posix {
             .expect("post manifest")
     }
 
+    /// Creates a FIFO through the platform's own `mkfifo` utility —
+    /// `std::os::unix::fs::mkfifo` is unstable (rust-lang/rust#139324) and
+    /// tests must compile on stable.
+    fn make_fifo(path: &std::path::Path, mode: &str) {
+        let status = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("mkfifo -m {mode} '{}'", path.display()))
+            .status()
+            .expect("run mkfifo");
+        assert!(status.success(), "mkfifo {mode} failed for {path:?}");
+    }
+
     /// AC1: the scanner classifies a FIFO as NAMED_PIPE with its mode
     /// recorded, without opening or blocking on it (a FIFO with no writer
     /// would block any reader).
     #[test]
     fn a_fifo_scans_as_a_supported_named_pipe() {
-        use std::os::unix::fs::mkfifo;
         let (root, _store, workspace) = fixture();
         let pipe = root.path().join("logpipe");
-        mkfifo(&pipe, 0o664).expect("create fifo");
+        make_fifo(&pipe, "664");
 
         workspace
             .reconcile_locked("fifo classification")
@@ -151,7 +162,7 @@ mod posix {
     fn replacing_a_fifo_with_a_file_is_reversible() {
         let (root, _store, workspace) = fixture();
         // The FIFO exists before the captured operation and is replaced by it.
-        std::os::unix::fs::mkfifo(root.path().join("swap.fifo"), 0o600).expect("create fifo");
+        make_fifo(&root.path().join("swap.fifo"), "600");
         workspace
             .reconcile_locked("fifo pre-state")
             .expect("reconcile");
