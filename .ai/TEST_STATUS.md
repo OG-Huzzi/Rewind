@@ -62,6 +62,16 @@ semantics, and unchanged `RecoveryRequired` behavior. The `rollback_tree`
 suite itself dropped from ≈ 45 s to ≈ 10 s as a side effect. POSIX-specific
 equivalence runs ride the ubuntu/macOS CI jobs.
 
+CI verified for the phase commits: run #42 on `dd80f6b` and run #43 on
+`6ec5e06` (the phase-final tree, 2026-09-26), each completed / success on
+ubuntu-latest, macos-latest, and windows-latest, with Format, Compile (all
+targets), Clippy (-D warnings), and Tests green per job — the ubuntu and
+macOS Tests steps therefore executed the POSIX-only `rollback_path_scan`
+equivalence cases (symlinks, FIFOs, sockets) and the POSIX-gated Phase 5
+tests. Re-verified locally 2026-09-26 (Windows, rustc 1.98.1): fmt, clippy
+`-D warnings`, `cargo test --all-targets` (152 passed / 0 failed), and
+`cargo test --doc` all green.
+
 The 149-test record below describes `aae28f4` before this phase.
 
 ---

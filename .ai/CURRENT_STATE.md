@@ -1,6 +1,11 @@
 # Current Implementation State
 
-Status: Phase 5 (platform expansion) first slice **implemented and
+Status: Rollback-performance phase (measurement-driven, ADR-018)
+**implemented and CI-verified** — per-step rollback verification observes
+only the affected path; 400-file undo ≈ 15.8 min → ≈ 1.25 min (debug) with
+identical safety anchors; contract at `.ai/PHASE_ROLLBACK_PERF.md`; CI
+run #43 on `6ec5e06` green on ubuntu/macOS/Windows. Phase 5 (platform
+expansion) first slice **implemented and
 CI-verified** — POSIX named pipes (FIFOs) as first-class objects; contract
 at `.ai/PHASE_5_PLATFORM_EXPANSION.md` including the object×platform
 capability matrix; final CI green on ubuntu/macOS/Windows (see
@@ -57,6 +62,9 @@ verification for the branch happens through its PR CI run.
   (6.1×); 400-file undo 950.5 s (15.8 min) → 74.7 s (12.7×); redo similar.
   Harness committed as `examples/rollback_bench.rs`.
 - Suite: 152 passed / 0 failed (3 new equivalence/adversarial tests).
+- CI: run #43 on `6ec5e06` green on ubuntu/macos/windows (run #42 on
+  `dd80f6b` likewise); identifiers and the local re-verification are
+  recorded in TEST_STATUS.md.
 
 ## Completed in Phase 5 (first slice)
 
@@ -241,10 +249,11 @@ verification for the branch happens through its PR CI run.
 
 ## Known limitations
 
-- Large rollbacks rescan the whole workspace per step (400-file
-  restore/undo ≈ 15.7 minutes, debug build, NTFS). Correctness is
-  prioritized; no performance guarantee exists. Phase 2 owns the
-  redesign; Phase 1.2 measures only.
+- Rollback no longer rescans the whole workspace per step (ADR-018): 400-file
+  undo ≈ 1.25 min (debug, NTFS), down from ≈ 15.8 min. The remaining cost is
+  journal durability (`synchronous = FULL`) plus the mutations themselves —
+  deliberately untouched. Correctness is still prioritized; no performance
+  guarantee exists.
 - True power-loss durability cannot be tested; kill-based crash
   injection and physical quarantine-move simulation are the strongest
   available evidence.
