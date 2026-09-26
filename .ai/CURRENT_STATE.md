@@ -43,6 +43,21 @@ new capacity tests, 17 `phase3_watcher` incl. a real detached-spawn
 end-to-end test; every Phase 1/2 suite unchanged and green). Platform
 verification for the branch happens through its PR CI run.
 
+## Rollback performance phase (proposed, measured, delivered)
+
+- Measured bottleneck: per-step full-workspace scans in rollback (2N+2 per
+  operation, 82-84% of undo time, quadratic scaling). Contract and
+  acceptance criteria in `.ai/PHASE_ROLLBACK_PERF.md`; decision ADR-018.
+- Fix: `scan::scan_fingerprint_at` + `Workspace::scan_path` — per-step
+  verification observes exactly the affected path via the scanner's shared
+  per-entry classification; fingerprints are identical to a full scan by
+  construction. Final full-scan state verification, journal durability,
+  conflict, quarantine, and confinement semantics untouched.
+- Measured result (debug, Windows/NTFS): 100-file undo 57.3 s → 9.35 s
+  (6.1×); 400-file undo 950.5 s (15.8 min) → 74.7 s (12.7×); redo similar.
+  Harness committed as `examples/rollback_bench.rs`.
+- Suite: 152 passed / 0 failed (3 new equivalence/adversarial tests).
+
 ## Completed in Phase 5 (first slice)
 
 - POSIX named pipes (FIFOs) are first-class objects: `Fingerprint::NamedPipe`

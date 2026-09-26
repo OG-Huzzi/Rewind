@@ -129,77 +129,18 @@ fn visit_directory(
         let metadata = fs::symlink_metadata(&path)
             .map_err(|error| RewindError::ScanIncomplete(format!("{}: {error}", path.display())))?;
         let file_type = metadata.file_type();
-        let reparse_unsupported = reparse_unsupported_fingerprint(&metadata, &file_type, &path);
-        let fingerprint = if let Some(unsupported_fingerprint) = reparse_unsupported {
-            unsupported.push(relative.clone());
-            unsupported_fingerprint
-        } else if file_type.is_dir() {
-            visit_directory(
-                root,
-                &path,
-                entries,
-                unsupported,
-                seen_case,
-                cas,
-                options,
-                false,
-            )?
-        } else if file_type.is_file() {
-            let hash = if options.ingest {
-                cas.put_file(&path)?
-            } else {
-                cas.hash_file(&path)?
-            };
-            let after_metadata = fs::symlink_metadata(&path).map_err(|error| {
-                RewindError::ScanIncomplete(format!("{}: {error}", path.display()))
-            })?;
-            if !after_metadata.file_type().is_file() {
-                return Err(RewindError::ScanIncomplete(format!(
-                    "object changed type while scanning {}",
-                    path.display()
-                )));
-            }
-            Fingerprint::RegularFile {
-                content_hash: hash,
-                size: after_metadata.len(),
-                metadata: metadata_fingerprint(&metadata),
-            }
-        } else if file_type.is_symlink() {
-            let target = fs::read_link(&path).map_err(|error| {
-                RewindError::ScanIncomplete(format!("{}: {error}", path.display()))
-            })?;
-            let target = target
-                .to_str()
-                .ok_or_else(|| {
-                    RewindError::ScanIncomplete(format!(
-                        "non-Unicode symlink target is unsupported: {}",
-                        path.display()
-                    ))
-                })?
-                .to_owned();
-            let target_kind = classify_symlink_target_kind(root, &path, target.as_str());
-            let target_hash = blake3::hash(target.as_bytes()).to_hex().to_string();
-            Fingerprint::Symlink {
-                target,
-                target_kind,
-                target_hash,
-                metadata: metadata_fingerprint(&metadata),
-            }
-        } else if fifo_file_type(&file_type) {
-            // A FIFO is classified from its file type alone: opening or
-            // reading it would block or consume data, and its in-flight
-            // content is kernel state that no manifest can hold. Only the
-            // existence and the recorded mode are state.
-            Fingerprint::NamedPipe {
-                metadata: metadata_fingerprint(&metadata),
-            }
-        } else {
-            unsupported.push(relative.clone());
-            Fingerprint::Unsupported {
-                object_kind: unsupported_object_kind(&file_type).to_owned(),
-                descriptor: metadata.len().to_string(),
-            }
-        };
+        let fingerprint = classify_entry(
+            root,
+            cas,
+            &path,
+            relative.clone(),
+            &metadata,
+            &file_type,
+            entries,
+            unsupported,
+            seen_case,
+            options,
+        )?;
         children.insert(name, fingerprint.clone());
         entries.insert(relative, fingerprint);
     }
@@ -394,6 +335,158 @@ mod reparse_tag {
             ))
         }
     }
+}
+
+/// The full scanner's per-entry classification for one filesystem object.
+/// Extracted verbatim from the scan loop so the path-scoped fingerprint scan
+/// (rollback performance phase) shares this exact code and therefore
+/// produces byte-identical fingerprints to a full scan.
+#[allow(clippy::too_many_arguments)]
+fn classify_entry(
+    root: &Path,
+    cas: &Cas,
+    path: &Path,
+    relative: String,
+    metadata: &fs::Metadata,
+    file_type: &std::fs::FileType,
+    entries: &mut BTreeMap<String, Fingerprint>,
+    unsupported: &mut Vec<String>,
+    seen_case: &mut BTreeMap<String, String>,
+    options: ScanOptions,
+) -> Result<Fingerprint> {
+    let reparse_unsupported = reparse_unsupported_fingerprint(metadata, file_type, path);
+    if let Some(unsupported_fingerprint) = reparse_unsupported {
+        unsupported.push(relative.clone());
+        return Ok(unsupported_fingerprint);
+    }
+    if file_type.is_dir() {
+        return visit_directory(
+            root,
+            path,
+            entries,
+            unsupported,
+            seen_case,
+            cas,
+            options,
+            false,
+        );
+    }
+    if file_type.is_file() {
+        let hash = if options.ingest {
+            cas.put_file(path)?
+        } else {
+            cas.hash_file(path)?
+        };
+        let after_metadata = fs::symlink_metadata(path)
+            .map_err(|error| RewindError::ScanIncomplete(format!("{}: {error}", path.display())))?;
+        if !after_metadata.file_type().is_file() {
+            return Err(RewindError::ScanIncomplete(format!(
+                "object changed type while scanning {}",
+                path.display()
+            )));
+        }
+        return Ok(Fingerprint::RegularFile {
+            content_hash: hash,
+            size: after_metadata.len(),
+            metadata: metadata_fingerprint(metadata),
+        });
+    }
+    if file_type.is_symlink() {
+        let target = fs::read_link(path)
+            .map_err(|error| RewindError::ScanIncomplete(format!("{}: {error}", path.display())))?;
+        let target = target.to_str().ok_or_else(|| {
+            RewindError::ScanIncomplete(format!(
+                "non-Unicode symlink target is unsupported: {}",
+                path.display()
+            ))
+        })?;
+        let target_kind = classify_symlink_target_kind(root, path, target);
+        let target_hash = blake3::hash(target.as_bytes()).to_hex().to_string();
+        return Ok(Fingerprint::Symlink {
+            target: target.to_owned(),
+            target_kind,
+            target_hash,
+            metadata: metadata_fingerprint(metadata),
+        });
+    }
+    if fifo_file_type(file_type) {
+        // A FIFO is classified from its file type alone: opening or reading
+        // it would block or consume data, and its in-flight content is
+        // kernel state that no manifest can hold. Only the existence and the
+        // recorded mode are state.
+        return Ok(Fingerprint::NamedPipe {
+            metadata: metadata_fingerprint(metadata),
+        });
+    }
+    unsupported.push(relative.clone());
+    Ok(Fingerprint::Unsupported {
+        object_kind: unsupported_object_kind(file_type).to_owned(),
+        descriptor: metadata.len().to_string(),
+    })
+}
+
+/// Computes the fingerprint of exactly one workspace-relative path — the
+/// same value a full `scan_workspace` would record for that path in its
+/// manifest, at the cost of walking only that path's own subtree. This is
+/// the observation primitive for rollback step verification, whose contract
+/// is per-path; the workspace's *global* state remains verified by a full
+/// scan at the end of every operation.
+///
+/// Missing paths produce `Absent`. The path must resolve inside the root;
+/// escapes are scan errors, never followed.
+pub fn scan_fingerprint_at(
+    root: &Path,
+    cas: &Cas,
+    relative: &str,
+    options: ScanOptions,
+) -> Result<Fingerprint> {
+    check_deadline(options)?;
+    let absolute = root.join(relative);
+    let metadata = match fs::symlink_metadata(&absolute) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Fingerprint::Absent)
+        }
+        Err(error) => {
+            return Err(RewindError::ScanIncomplete(format!(
+                "{}: {error}",
+                absolute.display()
+            )))
+        }
+    };
+    // Confinement: the path must normalize inside the root, exactly as the
+    // full scanner would have normalized it when recording the manifests.
+    let canonical_relative = normalize_relative(root, &absolute)?;
+    let file_type = metadata.file_type();
+    let mut entries = BTreeMap::new();
+    let mut unsupported = Vec::new();
+    let mut seen_case = BTreeMap::new();
+    if canonical_relative.is_empty() {
+        // Degenerate: the workspace root itself. Only the full root walk can
+        // name it (the root's own `.rewind` entry is excluded there).
+        return visit_directory(
+            root,
+            root,
+            &mut entries,
+            &mut unsupported,
+            &mut seen_case,
+            cas,
+            options,
+            true,
+        );
+    }
+    classify_entry(
+        root,
+        cas,
+        &absolute,
+        canonical_relative,
+        &metadata,
+        &file_type,
+        &mut entries,
+        &mut unsupported,
+        &mut seen_case,
+        options,
+    )
 }
 
 /// Platform gate for the FIFO classification: Unix file types know they

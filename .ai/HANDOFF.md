@@ -8,6 +8,13 @@ passed / 0 failed: 48 Phase 1 and 15 Phase 2 tests unchanged plus 43 new
 Phase 3 tests). Phase 2 and Phase 1 handoff content is preserved below
 unchanged.
 
+**Rollback performance invariant (ADR-018):** step verification observes
+only the affected path (`Workspace::scan_path` /
+`scan::scan_fingerprint_at`); do not reintroduce per-step full scans, and do
+not remove the entry/final full scans — the final full-scan state comparison
+is the only global deviation check. Journal durability writes are
+intentionally untouched.
+
 **The crate has three documented minimal FFI sites:** `reparse_tag`
 (`src/scan.rs`), `CreateProcessW` (`src/watch/detach_windows.rs`), and
 `mkfifo(2)` (`src/rollback.rs` — `std::os::unix::fs::mkfifo` is unstable,

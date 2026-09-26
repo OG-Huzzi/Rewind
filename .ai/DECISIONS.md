@@ -377,3 +377,39 @@ Workspaces with FIFOs roll back deterministically on Linux and macOS; the
 capability matrix (`.ai/PHASE_5_PLATFORM_EXPANSION.md` §3) is the normative
 object×platform record. Extended attributes, ACLs, ownership, and sparse
 files remain deferred until they can be recorded *and* restored faithfully.
+
+## ADR-018: Per-step rollback verification is path-scoped
+
+### Context
+Each rollback step performed two full workspace scans (pre-conflict and
+post-verification), but consumed only the affected path's fingerprint from
+them; the remaining scan output was discarded. Measured undo time was ~82%
+full scans with quadratic scaling (100 files: 57.3 s debug; 400 files:
+~15.7 min historical), while journal durability and actual mutations are
+linear in steps.
+
+### Decision
+Verify each step with a fingerprint scan of exactly the affected path
+(`scan::scan_fingerprint_at`), sharing the full scanner's per-entry
+classification so the produced fingerprint is identical to the full scan's.
+Global correctness remains anchored where it already was: the final full
+scan whose `state_id` must equal the target state, plus the entry scans.
+Recovery paths keep their full scans.
+
+### Alternatives
+Batch journal writes (touches durability), skip per-step verification
+(removes a safety check), cache fingerprints across steps (assumes state),
+parallel scanning (architecture change).
+
+### Rationale
+The verification contract is per-path by construction — the discarded scan
+data never contributed to any decision — so narrowing the observation to the
+contracted path preserves semantics while removing O(steps × files) work.
+Concurrent external interference anywhere is still caught by the final
+full-scan state comparison, exactly as before.
+
+### Consequences
+Rollback time becomes O(files + Σ touched subtrees) instead of
+O(steps × files). Unrelated-path scan errors now surface at the final scan
+rather than mid-operation (same RecoveryRequired class, later timing). No
+durability, confinement, quarantine, or identity change.

@@ -65,6 +65,11 @@ object×platform capability matrix in `.ai/PHASE_5_PLATFORM_EXPANSION.md`.
 Sockets, device nodes, junctions, xattrs/ACLs, and ownership remain
 unsupported or deferred as documented there.
 
+Post-roadmap measurement-driven phase (2026-09): rollback step verification
+narrowed to the affected path (ADR-018) after profiling showed per-step full
+scans were 82-84% of undo time with quadratic scaling — 400-file undo
+15.8 min → 1.25 min, identical safety anchors (`.ai/PHASE_ROLLBACK_PERF.md`).
+
 ## 7. Current gate
 
 Phases 1-4 are implemented and CI-verified. Phase 5's contract

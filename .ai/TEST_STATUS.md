@@ -1,7 +1,49 @@
 # Phase 1 Test Status
 
-Status after Phase 5 (platform expansion). Newer records are at the top; the
-Phase 4, Phase 3, and Phase 1.3 records are preserved below.
+Status after the rollback-performance phase. Newer records are at the top;
+the Phase 5, Phase 4, Phase 3, and Phase 1.3 records are preserved below.
+
+## Rollback performance phase (path-scoped step verification)
+
+Contract: `.ai/PHASE_ROLLBACK_PERF.md` (measured bottleneck, scope,
+invariants, objective, adversarial criteria); decision: ADR-018.
+
+Methodology: `examples/rollback_bench.rs` — deterministic harness seeding N
+files, one real captured operation modifying every file, then end-to-end
+undo/redo timings plus one bare full scan. Environment: Windows 11, NTFS,
+rustc 1.98.1, **debug build** (the historical baseline's profile). The
+400-file baseline independently reproduced the historical Phase 2 record
+(950.5 s vs the recorded ≈ 15.7 min).
+
+Before → after (same machine, same harness):
+
+| Files | UNDO before | UNDO after | speedup | REDO before | REDO after |
+|---|---|---|---|---|---|
+| 25 | 3.69 s | 2.05 s | 1.8× | 4.23 s | 2.09 s |
+| 100 | 57.26 s | 9.35 s | 6.1× | 48.02 s | 13.24 s |
+| 400 | 950.51 s (≈15.8 min) | 74.73 s (≈1.25 min) | 12.7× | 1012.88 s | 70.99 s |
+
+The measured bottleneck: `apply_step` performed two full workspace scans per
+step (2N+2 per rollback) while consuming only the affected path's fingerprint
+— 82-84% of undo time at every scale. The fix (`scan::scan_fingerprint_at`,
+shared per-entry classification with the full scanner) makes the fingerprints
+identical by construction; global correctness stays anchored on the final
+full-scan state comparison, which is unchanged. The remaining ~75 s at 400
+files is journal durability (`synchronous = FULL`) plus actual mutations —
+explicitly out of scope.
+
+Suite after the change (Windows, debug): **152 passed / 0 failed**
+(`cargo test --all-targets`), including 3 new
+`tests/rollback_path_scan.rs` tests proving fingerprint equivalence across
+every object type (files, nested/deep directories, absent paths, and — on
+POSIX — symlinks, FIFOs, sockets), live re-observation, plan-time conflict
+semantics, and unchanged `RecoveryRequired` behavior. The `rollback_tree`
+suite itself dropped from ≈ 45 s to ≈ 10 s as a side effect. POSIX-specific
+equivalence runs ride the ubuntu/macOS CI jobs.
+
+The 149-test record below describes `aae28f4` before this phase.
+
+---
 
 ## Phase 5 (platform expansion — POSIX named pipes)
 

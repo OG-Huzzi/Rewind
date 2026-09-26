@@ -259,6 +259,19 @@ impl Workspace {
     pub fn scan(&self, deadline: Option<Instant>) -> Result<ScanResult> {
         scan_workspace(&self.root, &self.storage.cas, ScanOptions::ingest(deadline))
     }
+    /// The fingerprint a full scan would record for one workspace-relative
+    /// path, computed by walking only that path's own subtree. Observation
+    /// primitive for rollback step verification (whose contract is
+    /// per-path); the workspace's global state remains verified by full
+    /// scans at operation entry and — authoritatively — at the end.
+    pub fn scan_path(&self, relative: &str) -> Result<Fingerprint> {
+        crate::scan::scan_fingerprint_at(
+            &self.root,
+            &self.storage.cas,
+            relative,
+            ScanOptions::ingest(None),
+        )
+    }
     /// Read-only counterpart of [`Workspace::scan`]: it computes the same
     /// manifest and `state_id`, but ingests nothing into the CAS. Phase 2
     /// planning uses this so that constructing or validating a plan cannot

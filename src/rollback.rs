@@ -523,8 +523,10 @@ fn apply_step(
         .after
         .get(path)
         .ok_or_else(|| RewindError::Journal(format!("step {index} has no after state")))?;
-    let current = workspace.scan(None)?;
-    let actual = current.manifest.get(path);
+    // Per-step observation is path-scoped by contract (ADR-018): the full
+    // scan's only consumed value here was `manifest.get(path)`, and global
+    // correctness is anchored by the final full-scan state comparison.
+    let actual = workspace.scan_path(path)?;
     if actual == *desired && backup_is_sufficient(&before_step, expected_before) {
         journal.steps[index].status = JournalStatus::Durable;
         workspace.storage.journals.write(journal)?;
@@ -655,8 +657,10 @@ fn apply_step(
     }
     journal.steps[index].status = JournalStatus::Applied;
     workspace.storage.journals.write(journal)?;
-    let verify = workspace.scan(None)?;
-    let actual_after = verify.manifest.get(path);
+    // Same per-path contract: verify exactly what this step was supposed to
+    // reach. Anything else in the workspace is judged by the final full
+    // scan's state comparison.
+    let actual_after = workspace.scan_path(path)?;
     if !compatible_after(&actual_after, desired) {
         journal.status = JournalStatus::RecoveryRequired;
         journal.steps[index].status = JournalStatus::RecoveryRequired;
