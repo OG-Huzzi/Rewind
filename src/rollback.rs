@@ -640,12 +640,7 @@ fn apply_step(
             #[cfg(unix)]
             {
                 ensure_parent_directories(&workspace.root, &target_path)?;
-                std::os::unix::fs::mkfifo(&target_path, 0o600).map_err(|error| {
-                    RewindError::Storage(format!(
-                        "create named pipe {}: {error}",
-                        target_path.display()
-                    ))
-                })?;
+                create_named_pipe(&target_path, 0o600)?;
                 apply_metadata(&target_path, desired)?;
                 crate::paths::verify_mutation_confined(&workspace.root, &target_path, true)?;
             }
@@ -783,6 +778,51 @@ fn ensure_parent_directories(root: &Path, target: &Path) -> Result<()> {
         .parent()
         .ok_or_else(|| RewindError::PathEscape(target.display().to_string()))?;
     fs::create_dir_all(parent)?;
+    Ok(())
+}
+
+/// `mode_t` under the POSIX ABIs Rewind's CI covers: `unsigned short` on
+/// macOS (`__darwin_mode_t`), `unsigned int` on Linux (glibc and musl).
+/// The FIFO modes passed here never exceed 0o7777, so both representations
+/// hold the value exactly.
+#[cfg(unix)]
+#[cfg(target_os = "macos")]
+type ModeT = std::os::raw::c_ushort;
+#[cfg(unix)]
+#[cfg(not(target_os = "macos"))]
+type ModeT = std::os::raw::c_uint;
+
+#[cfg(unix)]
+extern "C" {
+    fn mkfifo(path: *const std::os::raw::c_char, mode: ModeT) -> std::os::raw::c_int;
+}
+
+/// Creates a FIFO. `std::os::unix::fs::mkfifo` is unstable
+/// (rust-lang/rust#139324), so this declares the POSIX `mkfifo(2)` call
+/// directly — the crate's third minimal FFI site, alongside `reparse_tag`
+/// (`src/scan.rs`) and `CreateProcessW` (`src/watch/detach_windows.rs`).
+/// The requested mode is later superseded by the recorded authoritative
+/// mode via `chmod` (`apply_metadata`), which is not umask-affected; the
+/// umask can only narrow the initial private mode, never widen it.
+#[cfg(unix)]
+fn create_named_pipe(path: &Path, mode: u32) -> Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+        RewindError::Storage(format!("path contains an interior NUL: {}", path.display()))
+    })?;
+    let mode_repr = ModeT::try_from(mode)
+        .map_err(|_| RewindError::Storage(format!("mode {mode:o} out of range")))?;
+    // SAFETY: `c_path` is a NUL-terminated buffer owned for the duration of
+    // the call, and `mkfifo`'s only effect is creating the FIFO named by it;
+    // the result is checked and errno is read immediately.
+    let result = unsafe { mkfifo(c_path.as_ptr(), mode_repr) };
+    if result != 0 {
+        return Err(RewindError::Storage(format!(
+            "create named pipe {}: {}",
+            path.display(),
+            std::io::Error::last_os_error()
+        )));
+    }
     Ok(())
 }
 

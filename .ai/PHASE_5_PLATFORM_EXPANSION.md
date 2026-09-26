@@ -131,9 +131,10 @@ conditional safety language for everything outside the workspace boundary.
   manifests (without the variant) deserialize unchanged.
 - **AC6 (all platforms):** full existing suite stays green; the Windows CI
   job exercises unchanged behavior for all pre-existing object types.
-- **AC7 (POSIX):** FIFO restore is journaled and verified: an injected
-  failure after installation (the normal verification path) marks the step
-  `RecoveryRequired` rather than reporting success.
+- **AC7 (POSIX):** FIFO restore is journaled and verified: the post-apply
+  re-scan comparison (`compatible_after`, exact fingerprint equality
+  including mode) gates success — the shared verification path that marks a
+  failed step `RecoveryRequired`.
 - **AC8:** the capability matrix above ships in this document and the
   scanner's refusal descriptors name the actual object class found.
 

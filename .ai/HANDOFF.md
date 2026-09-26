@@ -8,6 +8,12 @@ passed / 0 failed: 48 Phase 1 and 15 Phase 2 tests unchanged plus 43 new
 Phase 3 tests). Phase 2 and Phase 1 handoff content is preserved below
 unchanged.
 
+**The crate has three documented minimal FFI sites:** `reparse_tag`
+(`src/scan.rs`), `CreateProcessW` (`src/watch/detach_windows.rs`), and
+`mkfifo(2)` (`src/rollback.rs` — `std::os::unix::fs::mkfifo` is unstable,
+rust-lang/rust#139324; the FFI declares `mode_t` per platform ABI:
+`c_ushort` on macOS, `c_uint` on Linux).
+
 The Phase 3 audit fixes were merged into `main` via PR #1 (merge commit
 `c4aeef7`; branch deleted). Phase 4's first slice — the read-only
 `rewind inspect timeline` time-range view — is merged on `main` (contract
