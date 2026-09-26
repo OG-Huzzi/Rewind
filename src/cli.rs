@@ -193,6 +193,22 @@ pub enum InspectCommand {
         #[arg(long)]
         limit: Option<usize>,
     },
+    /// Everything Rewind recorded inside a half-open time range
+    /// ([--since, --until): since inclusive, until exclusive), with
+    /// uncertainty exposed and never filled. Informational only: this never
+    /// mutates anything and cannot initiate a restore.
+    Timeline {
+        /// Range start as RFC 3339 (e.g. 2026-09-26T10:00:00Z), inclusive.
+        /// Defaults to the workspace's creation time.
+        #[arg(long)]
+        since: Option<String>,
+        /// Range end as RFC 3339, exclusive. Defaults to now.
+        #[arg(long)]
+        until: Option<String>,
+        /// Emit JSON: the interface of record for machine consumers.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// Rollback planning (Phase 2). This command never mutates: it reports what a
@@ -441,7 +457,153 @@ fn inspect(command: InspectCommand) -> Result<i32> {
     match command {
         InspectCommand::Graph { json, operation } => inspect_graph(&workspace, json, operation),
         InspectCommand::History { json, limit } => inspect_history(&workspace, json, limit),
+        InspectCommand::Timeline { since, until, json } => {
+            inspect_timeline(&workspace, since, until, json)
+        }
     }
+}
+
+/// The Phase 4 time-range view. Read-only: it opens the same diagnostic
+/// workspace path as the other inspect commands, reads catalog rows and
+/// watcher artifacts, and mutates nothing. Validation failures exit 2.
+fn inspect_timeline(
+    workspace: &Workspace,
+    since: Option<String>,
+    until: Option<String>,
+    json: bool,
+) -> Result<i32> {
+    use crate::humantime::{format_rfc3339, parse_rfc3339};
+    use crate::timeline::{read_watcher_evidence, TimelineInput};
+    use crate::watch::run::WatchPaths;
+
+    let row = workspace.row()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_micros() as i64)
+        .unwrap_or(0);
+    // Malformed bounds are usage errors (exit 2), not internal failures:
+    // validation must diagnose and stop without touching anything.
+    let since = match since {
+        Some(text) => match parse_rfc3339(&text) {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!("rewind: {error}");
+                return Ok(2);
+            }
+        },
+        None => row.created_at,
+    };
+    let until = match until {
+        Some(text) => match parse_rfc3339(&text) {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!("rewind: {error}");
+                return Ok(2);
+            }
+        },
+        None => now,
+    };
+    if since >= until {
+        eprintln!(
+            "rewind: invalid range: --since ({}) must be before --until ({})",
+            format_rfc3339(since),
+            format_rfc3339(until)
+        );
+        return Ok(2);
+    }
+
+    let watch_paths = WatchPaths::new(&workspace.storage.project_root);
+    let watcher = read_watcher_evidence(
+        &watch_paths.events,
+        &watch_paths.events_previous,
+        &watch_paths.degradations,
+        since,
+        until,
+    );
+    let report = TimelineInput {
+        since,
+        until,
+        now,
+        operations: workspace.storage.catalog.list_operations(workspace.id)?,
+        snapshots: workspace.storage.catalog.snapshots(workspace.id)?,
+        boundaries: workspace.storage.catalog.boundaries(workspace.id)?,
+        unknown_intervals: workspace.storage.catalog.unknown_intervals(workspace.id)?,
+        watcher,
+    }
+    .build();
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(0);
+    }
+
+    println!(
+        "timeline {} .. {} (half-open: since inclusive, until exclusive)",
+        report.since_text, report.until_text
+    );
+    for entry in &report.entries {
+        println!(
+            "{:<19} {:<17} {:<28} {}",
+            format_rfc3339(entry.timestamp),
+            entry.tier.as_str(),
+            entry.identifier,
+            entry.summary
+        );
+    }
+    if report.entries.is_empty() {
+        println!("(no recorded entries in this range)");
+    }
+    let mut by_kind: Vec<String> = report
+        .watcher
+        .events_in_range
+        .iter()
+        .map(|(kind, count)| format!("{kind}={count}"))
+        .collect();
+    by_kind.sort();
+    println!(
+        "coverage: history_complete={} watcher_log_generations={} watcher_events={} \
+         watcher_log_oldest={} open_unknown_intervals={}",
+        report.history_complete,
+        report.watcher.log_generations,
+        if by_kind.is_empty() {
+            "none".to_owned()
+        } else {
+            by_kind.join(",")
+        },
+        report
+            .watcher
+            .log_oldest_observation
+            .map(format_rfc3339)
+            .unwrap_or_else(|| "none".to_owned()),
+        report
+            .entries
+            .iter()
+            .filter(|entry| entry.tier == crate::timeline::Tier::UnknownInterval)
+            .count()
+    );
+    // The disclaimer matters only when a log exists but starts after the
+    // range: a workspace whose watcher never ran has nothing to disclaim,
+    // and `watcher_log_generations=0` already says that honestly.
+    if report.watcher.log_generations > 0
+        && crate::timeline::watcher_log_may_predate_range(&report.watcher, since)
+    {
+        println!(
+            "note: the watcher event log holds nothing before {} for this range; \
+             its absence of events proves nothing about the earlier portion",
+            report
+                .watcher
+                .log_oldest_observation
+                .map(format_rfc3339)
+                .unwrap_or_else(|| "any time".to_owned())
+        );
+    }
+    if !report.history_complete {
+        println!(
+            "note: this range contains uncertainty (unknown interval or watcher \
+             degradation); Rewind does not claim a complete or trustworthy history here"
+        );
+    }
+    Ok(0)
 }
 
 /// Render the dependency graph. Read-only.

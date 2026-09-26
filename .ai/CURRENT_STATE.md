@@ -1,6 +1,9 @@
 # Current Implementation State
 
-Status: Phase 3 (continuous observation) complete and CI-verified
+Status: Phase 4 first slice (time-range history view) implemented on top of
+the verified Phase 3 baseline (`c4aeef7`); see
+`.ai/PHASE_4_TIME_AND_ECOSYSTEM.md`. Phase 3 (continuous observation)
+complete and CI-verified
 (run #36111890265 on `d69fdca`: ubuntu, macOS and windows all green; see
 `.ai/PHASE_3_VERIFICATION_REPORT.md`, **Phase 3 VERIFIED** — full suite
 119 passed / 0 failed locally, all 63 Phase 1/2 tests unchanged). Phase 2
@@ -34,6 +37,23 @@ Local suite on the branch: 129 passed / 0 failed (49 lib unit incl. the
 new capacity tests, 17 `phase3_watcher` incl. a real detached-spawn
 end-to-end test; every Phase 1/2 suite unchanged and green). Platform
 verification for the branch happens through its PR CI run.
+
+## Completed in Phase 4 (first slice)
+
+- `rewind inspect timeline --since <RFC3339> [--until <RFC3339>] [--json]`:
+  a read-only, evidence-tier-aware view of recorded history in a half-open
+  time range (since inclusive, until exclusive). Merges operations,
+  snapshots, passive boundaries, unknown intervals, and bounded watcher
+  evidence (degradation records + per-kind event summary); unknown intervals
+  and watcher degradations force `history_complete=false`; the watcher log's
+  coverage bounds are stated, never silently trusted. Deterministic ordering
+  `(timestamp, tier, id)` and byte-identical JSON for identical inputs.
+- `src/humantime.rs`: dependency-free, exhaustively tested RFC 3339
+  parsing/formatting (epoch microseconds; verified against `date -u`).
+- `src/timeline.rs`: the pure merge plus the read-only watcher-evidence
+  reader; `src/db.rs` gained `snapshots()` and `WorkspaceRow.created_at`.
+- Package-specific recipes: evaluated and deferred (ADR-016); range-based
+  restore excluded (ADR-015).
 
 ## Completed in Phase 3
 
@@ -178,8 +198,9 @@ verification for the branch happens through its PR CI run.
 
 ## Not started
 
-- Phase 4 time/package recipes.
-- Phase 5 integrations.
+- Range-based restore (excluded by the Phase 4 contract, ADR-015).
+- Package-specific recipes (evaluated and deferred, ADR-016).
+- Phase 5 platform expansion.
 
 ## Known limitations
 

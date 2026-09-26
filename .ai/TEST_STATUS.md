@@ -1,7 +1,30 @@
 # Phase 1 Test Status
 
-Status after Phase 3 (continuous observation). The Phase 3 record is at the
-top; the Phase 1.3 status is preserved below.
+Status after Phase 4 first slice. Newer records are at the top; the Phase 3
+and Phase 1.3 records are preserved below.
+
+## Phase 4 first slice (time-range history view)
+
+Local suite (x86_64-pc-windows-gnu, Rust 1.98.1): **148 passed / 0 failed**
+(`cargo test --all-targets`; fmt, clippy `--all-targets --all-features -- -D
+warnings`, and `cargo test --doc` green): 61 lib unit tests (5 `humantime`
+incl. adversarial timestamp rejection and non-ASCII panic-safety, 7
+`timeline` incl. boundary/tiling/uncertainty/determinism, plus the 49
+prior), and a new **7-test `phase4_timeline`** integration suite driving the
+real CLI: empty history, half-open boundaries over a real capture, byte-identical
+JSON across invocations, uncertainty exposure with byte-identical catalog +
+workspace across the read-only view, watcher summary with rotation coverage
+and unparseable-line accounting, invalid ranges mutating nothing, and human
+output tier honesty.
+
+Deliberate failure checks: the read-only byte-identity assertion was
+verified to catch a WAL-checkpoint window (test now checkpoints before
+snapshotting); exit-code semantics for malformed bounds were driven from
+observed failures to the contract's exit 2.
+
+The 129-test record below describes `c4aeef7` before the Phase 4 work.
+
+---
 
 ## Post-Phase-3 audit-fix branch (`fix/phase3-watcher-quoting`)
 

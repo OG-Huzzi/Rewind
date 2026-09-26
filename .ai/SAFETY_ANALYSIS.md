@@ -124,3 +124,34 @@ The safe outcomes are explicit:
 
 The system must not translate these outcomes into a generic “completed”
 message.
+
+## 11. Phase 4 additions (time-range views)
+
+The timeline (`rewind inspect timeline`) adds a read-only rendering path and
+was analyzed against the existing hazard classes:
+
+- **No new mutation path.** The timeline opens the workspace through the
+  same diagnostic path as the existing inspect commands, acquires no lease,
+  runs no enforcement, and writes nothing. Proven by a test asserting the
+  catalog is byte-identical across an invocation even with a pending
+  degradation marker present (no gate transition, marker not consumed).
+- **Uncertainty is not laundered.** Unknown intervals and watcher
+  degradations inside the requested range force `history_complete=false` in
+  the machine output and an explicit "Rewind does not claim a complete or
+  trustworthy history here" statement in the human output. They are rendered
+  whole, never trimmed, closed, or reinterpreted.
+- **Absence of watcher events is not evidence of absence.** When the watcher
+  log's oldest observation postdates the requested `since`, the output states
+  that the log proves nothing about the earlier portion (watcher evidence is
+  advisory and rotates; it is never proof of filesystem state).
+- **Deterministic presentation.** Ordering is `(timestamp, tier, id)` with
+  published tier ranks; identical store contents produce byte-identical JSON,
+  so the view cannot be used to launder nondeterministic claims.
+- **Validation is airtight.** Malformed or inverted ranges exit 2 with a
+  diagnostic and mutate nothing; the RFC 3339 parser is byte-driven (no
+  slicing panics on non-UTF-8 input) and rejects impossible dates, including
+  leap seconds outside 23:59.
+
+Range-based restore remains excluded (ADR-015): a range does not identify a
+provable target state, and rendering evidence must not invite restore
+semantics the model cannot support.

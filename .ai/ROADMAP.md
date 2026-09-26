@@ -1,6 +1,8 @@
 # Engineering Roadmap
 
-Status: Phase 1 foundation implementation under verification
+Status: Phase 3 (continuous observation) verified and merged (`c4aeef7`);
+Phase 4 (time and ecosystem integrations) delivered its first vertical slice
+per `.ai/PHASE_4_TIME_AND_ECOSYSTEM.md`.
 
 ## 1. Phase strategy
 
@@ -46,6 +48,11 @@ Investigate time-range views and package-specific recipes only after the core
 state model can represent their limitations. Remote and system-wide side
 effects remain outside local rollback.
 
+Delivered (2026-09): the read-only time-range view `rewind inspect timeline`
+(half-open ranges, evidence tiers, explicit uncertainty) per the Phase 4
+contract; package-specific recipes evaluated and **deferred** (ADR-016).
+Range-based restore and causal attribution remain excluded.
+
 ## 6. Phase 5 - Platform expansion
 
 Expand object and metadata support only with platform-specific tests and an
@@ -54,6 +61,6 @@ because a common API name exists.
 
 ## 7. Current gate
 
-Phase 0.7 was documentation-only. Phase 1 remains limited to the frozen
-foundation contract until its implementation and independent verification are
-complete.
+Phases 1-3 are implemented and CI-verified. Phase 4's contract
+(`.ai/PHASE_4_TIME_AND_ECOSYSTEM.md`) governs the timeline slice; later Phase
+4 capabilities (if any) require a contract amendment before implementation.

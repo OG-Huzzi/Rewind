@@ -290,3 +290,60 @@ do not hold it.
 
 ### Consequences
 Busy, lock, and conflict results are normal safe outcomes.
+
+## ADR-015: Time-range views are read-only evidence renderings
+
+### Context
+Phase 4 (time-range views) could either render recorded evidence inside a
+time range or offer range-based restore. Restore-from-range would require
+inferring a target state from heterogeneous evidence tiers.
+
+### Decision
+The timeline (`rewind inspect timeline`) is informational only. It merges
+operations, snapshots, passive boundaries, unknown intervals, and bounded
+watcher summaries with per-tier evidentiary labels, uses a half-open range
+(since inclusive, until exclusive), orders deterministically, and forces an
+explicit `history_complete=false` whenever an unknown interval or watcher
+degradation intersects the range. It opens no lease, runs no enforcement,
+and cannot initiate a mutation. RFC 3339 parsing is a small dependency-free,
+exhaustively tested module (`src/humantime.rs`).
+
+### Alternatives
+Restore-from-range, trimming spans to the range, or inferring missing
+history from watcher events.
+
+### Rationale
+Rendering evidence cannot turn the watcher into proof of filesystem state,
+and range restore would fabricate target states that the model cannot prove.
+
+### Consequences
+Users inspect history by time but restore only through the existing
+state-anchored undo/redo/restore commands. Missing history stays missing.
+
+## ADR-016: Package-specific recipes are deferred
+
+### Context
+Phase 4 asked whether package-manager recipes (cargo, npm, pip, …) can be
+integrated honestly. A package action's workspace file effects are already
+recorded by generic capture; everything that makes it a package action —
+registry state, lockfile regeneration from remote data, global caches,
+shared stores, post-install scripts — is remote or system-wide state the
+local model cannot prove or reverse.
+
+### Decision
+Defer recipes. A recipe layer would add labels, not provable evidence, and
+presenting `npm install` as a reversible package transaction would claim
+guarantees the state model does not have.
+
+### Alternatives
+Implement per-ecosystem recipes with best-effort undo, or record only
+manifest fingerprints as extra capture metadata.
+
+### Rationale
+The project refuses to guess: a recipe without provable pre/post package
+state is a presentation of uncertainty as reversibility.
+
+### Consequences
+Package-manager activity remains visible in history exactly as any other
+command capture. Recipes return only when a use case adds provable evidence,
+such as recording a lockfile fingerprint as part of strong capture.

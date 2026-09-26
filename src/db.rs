@@ -22,6 +22,9 @@ pub struct WorkspaceRow {
     pub root: String,
     pub condition: WorkspaceCondition,
     pub baseline_state: Option<String>,
+    /// Workspace creation time (epoch microseconds), the default lower
+    /// bound of the Phase 4 timeline.
+    pub created_at: i64,
 }
 
 #[derive(Clone, Debug)]
@@ -70,6 +73,14 @@ pub struct UnknownIntervalRow {
     pub is_open: bool,
     pub created_at: i64,
     pub closed_at: Option<i64>,
+}
+
+/// One named snapshot row (Phase 4 timeline: read-only inspection).
+#[derive(Clone, Debug)]
+pub struct SnapshotRow {
+    pub name: String,
+    pub state_id: String,
+    pub created_at: i64,
 }
 
 const BOUNDARY_COLUMNS: &str =
@@ -227,12 +238,19 @@ impl Catalog {
         let connection = self.connection()?;
         let row = connection
             .query_row(
-                "SELECT id, root, condition, baseline_state_id FROM workspaces WHERE id=?1",
+                "SELECT id, root, condition, baseline_state_id, created_at
+                 FROM workspaces WHERE id=?1",
                 params![id.to_string()],
                 |row| {
                     let id: String = row.get(0)?;
                     let condition: String = row.get(2)?;
-                    Ok((id, row.get::<_, String>(1)?, condition, row.get(3)?))
+                    Ok((
+                        id,
+                        row.get::<_, String>(1)?,
+                        condition,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
                 },
             )
             .optional()?
@@ -243,6 +261,7 @@ impl Catalog {
             root: row.1,
             condition: WorkspaceCondition::from_str(&row.2)?,
             baseline_state: row.3,
+            created_at: row.4,
         })
     }
 
@@ -690,6 +709,29 @@ impl Catalog {
             )
             .optional()?
             .ok_or_else(|| RewindError::NotFound(format!("snapshot {name}")))
+    }
+
+    /// Every named snapshot for this workspace, ordered by creation time
+    /// then name (Phase 4 timeline: read-only inspection).
+    pub fn snapshots(&self, workspace_id: Uuid) -> Result<Vec<SnapshotRow>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT name, state_id, created_at
+             FROM snapshots WHERE workspace_id=?1
+             ORDER BY created_at, name",
+        )?;
+        let rows = statement.query_map(params![workspace_id.to_string()], |row| {
+            Ok(SnapshotRow {
+                name: row.get(0)?,
+                state_id: row.get(1)?,
+                created_at: row.get(2)?,
+            })
+        })?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        Ok(result)
     }
 }
 

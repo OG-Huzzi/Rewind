@@ -8,12 +8,13 @@ passed / 0 failed: 48 Phase 1 and 15 Phase 2 tests unchanged plus 43 new
 Phase 3 tests). Phase 2 and Phase 1 handoff content is preserved below
 unchanged.
 
-Post-Phase-3 audit fixes live on branch `fix/phase3-watcher-quoting`
-(commit `c881ba3` + follow-up; PR open against `main`, not merged):
-multi-path notification truncation fixed with a capacity-bounded pending
-queue (`PENDING_CAPACITY`, exhaustion routes through the existing OVERFLOW
-degradation path) and CRT-correct Windows argument quoting. See
-`.ai/CURRENT_STATE.md` and `.ai/TEST_STATUS.md` for the branch state.
+The Phase 3 audit fixes were merged into `main` via PR #1 (merge commit
+`c4aeef7`; branch deleted). Phase 4's first slice — the read-only
+`rewind inspect timeline` time-range view — is implemented directly on
+`main`; its contract is `.ai/PHASE_4_TIME_AND_ECOSYSTEM.md`, with the
+timeline's do-not-regress invariants in ADR-015 (informational only, no
+lease, no enforcement, uncertainty never filled) and the recipes deferral in
+ADR-016.
 
 ## -3. Phase 3 watcher invariants (do not regress)
 
