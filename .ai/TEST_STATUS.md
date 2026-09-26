@@ -31,6 +31,17 @@ caught that the Windows host cannot even compile):
    was cancelled (~6 h). Fixed by never opening a FIFO: its directory-entry
    durability is the parent-directory fsync that was already there.
 
+**CI verified (commit `4d5f242`, run of 2026-09-26): ubuntu-latest,
+macos-latest, and windows-latest all completed / success.** The ubuntu
+runner's log shows the full `phase5_platform` suite executing: 5 passed /
+0 failed — `posix::a_fifo_scans_as_a_supported_named_pipe`,
+`posix::fifo_creation_is_captured_and_reversible`,
+`posix::replacing_a_fifo_with_a_file_is_reversible` (the FIFO create → undo
+→ redo lifecycle with recorded-mode preservation, verified on real Linux),
+`posix::unix_sockets_stay_unsupported_and_refuse_undo`, and the
+cross-platform serde compatibility test. Windows ran the same suite with the
+POSIX module compiled out (1 passed), its object behavior unchanged.
+
 The 148-test record below describes `1f37ec3` before the Phase 5 work.
 
 ---

@@ -1,9 +1,10 @@
 # Current Implementation State
 
-Status: Phase 5 (platform expansion) first slice **implemented** — POSIX
-named pipes (FIFOs) as first-class objects, contract at
-`.ai/PHASE_5_PLATFORM_EXPANSION.md` including the object×platform capability
-matrix. Phase 4 first slice (time-range history view) **implemented and
+Status: Phase 5 (platform expansion) first slice **implemented and
+CI-verified** — POSIX named pipes (FIFOs) as first-class objects; contract
+at `.ai/PHASE_5_PLATFORM_EXPANSION.md` including the object×platform
+capability matrix; final CI green on ubuntu/macOS/Windows (see
+TEST_STATUS.md for the run and the FIFO lifecycle evidence). Phase 4 first slice (time-range history view) **implemented and
 CI-verified** — commit `1f37ec3` on `main`, CI run 36228897539 green on
 ubuntu/macOS/Windows; contract at `.ai/PHASE_4_TIME_AND_ECOSYSTEM.md`
 (status corrected there post-implementation; recipes deferral is ADR-016).
