@@ -17,10 +17,19 @@ jobs (this is the same pattern as Phase 1.1: local cross-checks are exactly
 what CI covers). Windows behavior for all pre-existing object types is
 unchanged and covered by the unchanged Windows CI job.
 
-Deliberate-failure checks: `plan.rs` blocks undo at plan time for
-unsupported objects on either side of an effect (asserted by the socket
-refusal test); `NamedPipe` reports restore-support so the same machinery
-now admits FIFOs.
+Deliberate-failure checks and CI-repair cycles (real defects the POSIX CI
+caught that the Windows host cannot even compile):
+1. `std::os::unix::fs::mkfifo` is unstable (rust-lang/rust#139324) — lib and
+   tests failed to compile on Linux/macOS; fixed by declaring `mkfifo(2)`
+   directly (crate FFI site #3, `mode_t` per platform ABI) and creating test
+   FIFOs via the `mkfifo` utility.
+2. `undo` takes `Option<i64>` (test passed it double-wrapped) and an unused
+   unix-only binding — compile errors invisible locally.
+3. **A real product hang:** `sync_target` opened any non-symlink target
+   read-only to fsync it; `open(2)` on a FIFO blocks until a writer appears,
+   so redo/undo that recreate a FIFO hung the POSIX runners until the run
+   was cancelled (~6 h). Fixed by never opening a FIFO: its directory-entry
+   durability is the parent-directory fsync that was already there.
 
 The 148-test record below describes `1f37ec3` before the Phase 5 work.
 
