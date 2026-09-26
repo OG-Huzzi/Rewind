@@ -62,9 +62,19 @@ fn path_scoped_fingerprints_match_the_full_scan() {
 
     #[cfg(unix)]
     {
+        // std::os::unix::fs::mkfifo is unstable (rust-lang/rust#139324):
+        // tests create FIFOs through the platform's mkfifo utility.
+        let status = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!(
+                "mkfifo -m 600 '{}'",
+                root.path().join("pipe").display()
+            ))
+            .status()
+            .expect("run mkfifo");
+        assert!(status.success(), "mkfifo failed");
         std::os::unix::fs::symlink("file.txt", root.path().join("link.txt"))
             .expect("create symlink");
-        std::os::unix::fs::mkfifo(root.path().join("pipe"), 0o600).expect("create fifo");
         let _listener = std::os::unix::net::UnixListener::bind(root.path().join("runtime.sock"))
             .expect("bind socket");
         workspace
