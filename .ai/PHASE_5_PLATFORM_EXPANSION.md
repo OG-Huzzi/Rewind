@@ -110,6 +110,15 @@ conditional safety language for everything outside the workspace boundary.
 - The scanner must never open, read, or block on a FIFO: the FIFO branch
   classifies from `file_type` only, exactly like directories and symlinks.
   (The pre-existing regular-file path reads only regular files.)
+- The same rule governs durability: `sync_target` never opens a FIFO —
+  `open(2)` on a FIFO blocks until a writer appears (caught as a real
+  multi-hour POSIX CI hang, see TEST_STATUS). A FIFO has no byte content to
+  fsync; the durability of its directory entry is the parent-directory fsync
+  that sync_target already performs.
+- Archival of a quarantined FIFO is best-effort: `copy_artifact` refuses
+  non-file objects, so an archive containing a FIFO records
+  `ArchiveStatus::Failed` with a named reason; the local quarantine remains
+  the recovery record, exactly as the storage boundary specifies.
 - Windows behavior for every pre-existing object type is byte-for-byte
   unchanged; Windows never produces `NamedPipe`.
 
