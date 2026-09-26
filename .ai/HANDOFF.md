@@ -8,6 +8,13 @@ passed / 0 failed: 48 Phase 1 and 15 Phase 2 tests unchanged plus 43 new
 Phase 3 tests). Phase 2 and Phase 1 handoff content is preserved below
 unchanged.
 
+Post-Phase-3 audit fixes live on branch `fix/phase3-watcher-quoting`
+(commit `c881ba3` + follow-up; PR open against `main`, not merged):
+multi-path notification truncation fixed with a capacity-bounded pending
+queue (`PENDING_CAPACITY`, exhaustion routes through the existing OVERFLOW
+degradation path) and CRT-correct Windows argument quoting. See
+`.ai/CURRENT_STATE.md` and `.ai/TEST_STATUS.md` for the branch state.
+
 ## -3. Phase 3 watcher invariants (do not regress)
 
 - The watcher is **advisory only**, and this is structural, not a promise:
@@ -37,7 +44,11 @@ unchanged.
   by the dirty cap (100 000 paths; past it the watcher degrades instead of
   growing), the event log rotates at 8 MiB, and heartbeats are at most one
   atomic write per 2 s. Coalescing appends raw evidence to `events.log`
-  first — coalescing must never erase evidence.
+  first — coalescing must never erase evidence. The adapter's pending
+  event queue is likewise bounded (`PENDING_CAPACITY` = 4096): a mapped
+  batch larger than the cap is truncated and surfaced as `Overflow` after
+  the preserved prefix drains, so capacity exhaustion can only produce a
+  degradation, never silent loss or unbounded growth.
 - Watcher scope == scanner scope: the recursive tree under the canonical
   root excluding the root `.rewind` directory. Event paths are confined
   with the existing `src/paths.rs` helpers (`normalize_relative`); escapes

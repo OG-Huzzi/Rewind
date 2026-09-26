@@ -716,3 +716,124 @@ fn watch_status_reports_a_dead_watcher_as_failed_not_running() {
     assert!(stdout.contains("\"FAILED\""), "{stdout}");
     assert!(stdout.contains("restart"), "{stdout}");
 }
+
+// ---------------------------------------------------------------------------
+// Windows argument quoting: round-trip through a REAL child parser
+// ---------------------------------------------------------------------------
+
+/// The child the watcher spawns is a Rust program, whose `std::env::args`
+/// follows the MSVCRT parsing rules. This test serializes each case with
+/// the production `quote`, injects it verbatim into a real `rewind`
+/// process's command line (`raw_arg` — no re-quoting by std), and asserts
+/// from the child's own error output that it parsed the intended value.
+/// A broken quoting scheme (e.g. a trailing backslash eating the closing
+/// quote) glues or mangles the argument and the echo changes.
+#[test]
+#[cfg(windows)]
+fn windows_quoting_round_trips_through_a_real_child_parser() {
+    use rewind::watch::detach_windows::quote;
+    use std::os::windows::process::CommandExt;
+
+    let cases = [
+        "C:\\",
+        "\\\\?\\C:\\",
+        "C:\\ws\\",
+        "D:\\Program Files\\rewind.exe",
+        "a b c",
+        "has\"quote",
+        "dir\\\"x",
+        "",
+        // Non-ASCII survives wide-character conversion and the pipe intact.
+        "café-日本語",
+        "日本語 dir\\",
+    ];
+    for value in cases {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_rewind"))
+            .arg("show")
+            .raw_arg(quote(value))
+            .output()
+            .expect("spawn rewind");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let expected = format!("invalid value '{value}'");
+        assert!(
+            stderr.contains(&expected),
+            "child parsed {value:?} incorrectly; stderr was:\n{stderr}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Windows detached spawn: a real child receives the intended arguments
+// ---------------------------------------------------------------------------
+
+/// The real detached-spawn path end to end. `spawn_detached_no_inherit`
+/// builds a command line whose `--root` argument contains a space AND ends
+/// in a backslash — the exact shapes the old quoting broke — and the child's
+/// observable behavior proves it received usable arguments: it discovers the
+/// workspace and reports a fresh heartbeat in that workspace's store, then
+/// stops cleanly through the real stop-flag path. The old quoting serialized
+/// such a root as `...ws dir\"`, which the child's CRT parser reads as an
+/// escaped literal quote and glues the following arguments into the root;
+/// discovery then fails and no heartbeat ever appears (verified: this test
+/// fails against the pre-fix `format!("\"{argument}\"")` quoting). A dropped
+/// trailing separator, by contrast, is invisible to workspace discovery —
+/// that variant is pinned by the byte-exact serialization table, the CRT
+/// round-trip decoder, and the real-child clap echo above.
+#[test]
+#[cfg(windows)]
+fn detached_spawn_delivers_the_intended_root_to_a_real_child() {
+    use rewind::watch::detach_windows::spawn_detached_no_inherit;
+    use rewind::watch::run::read_state;
+
+    let _cli = CLI_LOCK.lock().expect("cli lock");
+
+    let base = tempfile::tempdir().expect("temporary base").keep();
+    let workspace_root = base.join("ws dir");
+    fs::create_dir_all(&workspace_root).expect("create workspace");
+    fs::write(workspace_root.join("foo.txt"), b"A").expect("write fixture");
+    let store = tempfile::tempdir().expect("temporary store").keep();
+    Workspace::init(&workspace_root, Some(store.as_path())).expect("initialize");
+
+    // The argument exactly as the launcher builds it: a root ending in a
+    // backslash (a drive-root workspace canonicalizes to this shape).
+    let mut root_argument = workspace_root.to_string_lossy().into_owned();
+    if !root_argument.ends_with('\\') {
+        root_argument.push('\\');
+    }
+    assert!(root_argument.ends_with('\\'));
+    assert!(root_argument.contains(' '), "space must exercise quoting");
+
+    let exe = PathBuf::from(env!("CARGO_BIN_EXE_rewind"));
+    let arguments = [
+        "watch".to_owned(),
+        "serve".to_owned(),
+        "--root".to_owned(),
+        root_argument.clone(),
+        "--batch-ms".to_owned(),
+        "50".to_owned(),
+    ];
+    let pid = spawn_detached_no_inherit(&exe, &arguments).expect("detached spawn");
+    assert!(pid > 0);
+
+    // The child must have received the exact root: discovery succeeds and a
+    // fresh heartbeat appears in THIS workspace's project store.
+    let ctx = WatchContext::discover(&workspace_root).expect("watch context");
+    let heartbeat = wait_until(Duration::from_secs(30), || {
+        matches!(read_state(&ctx.paths), Some(state)
+            if state.status == StatusKind::Running
+                && lifecycle::heartbeat_is_fresh(&state))
+    });
+    assert!(
+        heartbeat,
+        "detached child never reported a fresh heartbeat for {root_argument}; \
+         it did not receive the intended root"
+    );
+
+    // Stop the child through the real stop-flag path and wait for `Stopped`.
+    request_stop(&ctx);
+    let stopped = wait_until(
+        Duration::from_secs(30),
+        || matches!(read_state(&ctx.paths), Some(state) if state.status == StatusKind::Stopped),
+    );
+    assert!(stopped, "detached child did not stop");
+}
