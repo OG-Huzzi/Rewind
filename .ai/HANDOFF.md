@@ -10,11 +10,15 @@ unchanged.
 
 The Phase 3 audit fixes were merged into `main` via PR #1 (merge commit
 `c4aeef7`; branch deleted). Phase 4's first slice — the read-only
-`rewind inspect timeline` time-range view — is implemented directly on
-`main`; its contract is `.ai/PHASE_4_TIME_AND_ECOSYSTEM.md`, with the
-timeline's do-not-regress invariants in ADR-015 (informational only, no
-lease, no enforcement, uncertainty never filled) and the recipes deferral in
-ADR-016.
+`rewind inspect timeline` time-range view — is merged on `main` (contract
+`.ai/PHASE_4_TIME_AND_ECOSYSTEM.md`; invariants in ADR-015; recipes
+deferral in ADR-016). Phase 5's first slice — POSIX named pipes as
+first-class objects, with the object×platform capability matrix — is
+implemented on `main` (contract `.ai/PHASE_5_PLATFORM_EXPANSION.md`;
+decision in ADR-017): FIFOs classify from file type alone, restore via
+`mkfifo` with a private initial mode plus the recorded authoritative mode,
+and never enter CAS. Do not widen the capability matrix without a contract
+amendment.
 
 ## -3. Phase 3 watcher invariants (do not regress)
 

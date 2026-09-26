@@ -1,9 +1,13 @@
 # Current Implementation State
 
-Status: Phase 4 first slice (time-range history view) implemented on top of
-the verified Phase 3 baseline (`c4aeef7`); see
-`.ai/PHASE_4_TIME_AND_ECOSYSTEM.md`. Phase 3 (continuous observation)
-complete and CI-verified
+Status: Phase 5 (platform expansion) first slice **implemented** — POSIX
+named pipes (FIFOs) as first-class objects, contract at
+`.ai/PHASE_5_PLATFORM_EXPANSION.md` including the object×platform capability
+matrix. Phase 4 first slice (time-range history view) **implemented and
+CI-verified** — commit `1f37ec3` on `main`, CI run 36228897539 green on
+ubuntu/macOS/Windows; contract at `.ai/PHASE_4_TIME_AND_ECOSYSTEM.md`
+(status corrected there post-implementation; recipes deferral is ADR-016).
+Phase 3 (continuous observation) complete and CI-verified
 (run #36111890265 on `d69fdca`: ubuntu, macOS and windows all green; see
 `.ai/PHASE_3_VERIFICATION_REPORT.md`, **Phase 3 VERIFIED** — full suite
 119 passed / 0 failed locally, all 63 Phase 1/2 tests unchanged). Phase 2
@@ -37,6 +41,23 @@ Local suite on the branch: 129 passed / 0 failed (49 lib unit incl. the
 new capacity tests, 17 `phase3_watcher` incl. a real detached-spawn
 end-to-end test; every Phase 1/2 suite unchanged and green). Platform
 verification for the branch happens through its PR CI run.
+
+## Completed in Phase 5 (first slice)
+
+- POSIX named pipes (FIFOs) are first-class objects: `Fingerprint::NamedPipe`
+  (existence + permission mode only — a FIFO's in-flight content is kernel
+  state no manifest can hold), scanner classification from file type alone
+  (never opened or read), restore through `mkfifo` with a private initial
+  mode and the recorded authoritative mode, inside the existing
+  journal/quarantine/confinement/verification machinery. A workspace
+  containing a FIFO no longer poisons undo/redo on Linux/macOS.
+- Scanner refusal descriptors now name the object class (`UNIX_SOCKET`,
+  `CHARACTER_DEVICE`, `BLOCK_DEVICE`) instead of a debug string.
+- Capability matrix shipped in the Phase 5 contract; Windows object behavior
+  unchanged (the scanner can never produce `NamedPipe` there; a foreign
+  manifest containing one is refused at materialization).
+- Sockets, device nodes, junctions, xattrs/ACLs, ownership: explicitly
+  unsupported or deferred (see contract §2).
 
 ## Completed in Phase 4 (first slice)
 

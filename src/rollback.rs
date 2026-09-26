@@ -621,6 +621,35 @@ fn apply_step(
                 )));
             }
         }
+        Fingerprint::NamedPipe {
+            metadata: desired_metadata,
+        } => {
+            // A FIFO is a kernel object with no content: create it with a
+            // private mode first (no window where a manifest-unspecified
+            // world-accessible pipe exists), then apply the recorded
+            // authoritative mode. Reading or writing the pipe is never
+            // attempted. A platform that cannot create FIFOs refuses before
+            // touching anything.
+            #[cfg(not(unix))]
+            {
+                let _ = desired_metadata;
+                return Err(RewindError::Unsupported(format!(
+                    "named pipes cannot be restored on this platform: {path}"
+                )));
+            }
+            #[cfg(unix)]
+            {
+                ensure_parent_directories(&workspace.root, &target_path)?;
+                std::os::unix::fs::mkfifo(&target_path, 0o600).map_err(|error| {
+                    RewindError::Storage(format!(
+                        "create named pipe {}: {error}",
+                        target_path.display()
+                    ))
+                })?;
+                apply_metadata(&target_path, desired)?;
+                crate::paths::verify_mutation_confined(&workspace.root, &target_path, true)?;
+            }
+        }
         Fingerprint::Unsupported { .. } => {
             return Err(RewindError::Unsupported(format!(
                 "cannot install unsupported object at {path}"
@@ -680,6 +709,8 @@ fn desired_artifact_is_ready(step: &JournalStep, desired: &Fingerprint) -> bool 
             .as_deref()
             .is_some_and(|path| fs::symlink_metadata(path).is_ok()),
         Fingerprint::Directory { .. } | Fingerprint::Symlink { .. } => true,
+        // A FIFO has no staged content: existence is the whole state.
+        Fingerprint::NamedPipe { .. } => true,
         Fingerprint::Absent | Fingerprint::Unsupported { .. } => false,
     }
 }
@@ -713,6 +744,28 @@ fn artifact_matches_fingerprint(path: &Path, expected: &Fingerprint) -> bool {
                     .map(|actual| actual.to_string_lossy() == target.as_str())
                     .unwrap_or(false)
         }
+        Fingerprint::NamedPipe {
+            metadata: expected_metadata,
+        } => {
+            // The quarantined object must still be a FIFO with the recorded
+            // mode; verifying never opens the pipe.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+                if !metadata.file_type().is_fifo() {
+                    return false;
+                }
+                match expected_metadata.mode {
+                    Some(mode) => metadata.permissions().mode() & 0o777 == mode,
+                    None => true,
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = expected_metadata;
+                false
+            }
+        }
         Fingerprint::Unsupported { .. } => false,
     }
 }
@@ -735,9 +788,9 @@ fn ensure_parent_directories(root: &Path, target: &Path) -> Result<()> {
 
 fn apply_metadata(path: &Path, fingerprint: &Fingerprint) -> Result<()> {
     let metadata = match fingerprint {
-        Fingerprint::RegularFile { metadata, .. } | Fingerprint::Directory { metadata, .. } => {
-            metadata
-        }
+        Fingerprint::RegularFile { metadata, .. }
+        | Fingerprint::Directory { metadata, .. }
+        | Fingerprint::NamedPipe { metadata } => metadata,
         _ => return Ok(()),
     };
     let mut permissions = fs::metadata(path)?.permissions();

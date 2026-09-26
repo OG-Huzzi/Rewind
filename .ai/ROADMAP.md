@@ -1,8 +1,8 @@
 # Engineering Roadmap
 
-Status: Phase 3 (continuous observation) verified and merged (`c4aeef7`);
-Phase 4 (time and ecosystem integrations) delivered its first vertical slice
-per `.ai/PHASE_4_TIME_AND_ECOSYSTEM.md`.
+Status: Phase 4 (time and ecosystem integrations) delivered and CI-verified
+(`1f37ec3`); Phase 5 (platform expansion) first slice — POSIX named pipes —
+delivered per `.ai/PHASE_5_PLATFORM_EXPANSION.md`.
 
 ## 1. Phase strategy
 
@@ -59,8 +59,15 @@ Expand object and metadata support only with platform-specific tests and an
 updated capability matrix. A new platform is not considered supported merely
 because a common API name exists.
 
+Delivered (2026-09): POSIX named pipes (FIFOs) as supported objects with
+real POSIX CI tests, precise unsupported-object descriptors, and the
+object×platform capability matrix in `.ai/PHASE_5_PLATFORM_EXPANSION.md`.
+Sockets, device nodes, junctions, xattrs/ACLs, and ownership remain
+unsupported or deferred as documented there.
+
 ## 7. Current gate
 
-Phases 1-3 are implemented and CI-verified. Phase 4's contract
-(`.ai/PHASE_4_TIME_AND_ECOSYSTEM.md`) governs the timeline slice; later Phase
-4 capabilities (if any) require a contract amendment before implementation.
+Phases 1-4 are implemented and CI-verified. Phase 5's contract
+(`.ai/PHASE_5_PLATFORM_EXPANSION.md`) governs the object-expansion slice;
+further expansion (new object kinds, metadata classes, or platforms) requires
+a contract amendment with a capability-matrix update before implementation.

@@ -155,3 +155,27 @@ was analyzed against the existing hazard classes:
 Range-based restore remains excluded (ADR-015): a range does not identify a
 provable target state, and rendering evidence must not invite restore
 semantics the model cannot support.
+
+## 12. Phase 5 additions (named pipes)
+
+- **No new write primitives.** FIFO restore reuses the journaled step
+  machinery end-to-end: quarantine-by-rename of the replaced object, parent
+  confinement, post-mutation confinement verification, per-step durability,
+  and post-apply re-scan comparison. The only new filesystem call is
+  `mkfifo` on a path already confinement-checked.
+- **No privilege window.** The pipe is created with 0o600 and then set to
+  the recorded mode, so a manifest-unspecified world-accessible pipe never
+  exists, even briefly.
+- **No content claims.** A FIFO's in-flight bytes are kernel state; the
+  fingerprint holds existence and mode only. Nothing in any output suggests
+  pipe *content* was captured or restored.
+- **Scan safety.** Classification reads `file_type` only — the scanner
+  cannot block on or consume from a FIFO, and the pre-existing regular-file
+  read path is unchanged.
+- **Refusals stay refusals.** Sockets and device nodes keep
+  `is_supported_for_restore() == false` and block rollback at plan time with
+  descriptors naming the object class. Windows refuses a foreign
+  `NamedPipe` manifest at materialization instead of guessing.
+- **Compatibility.** The serde variant is additive; every previously readable
+  manifest stays readable. An old binary reading a new manifest fails with
+  an explicit unknown-variant error — honest refusal, not corruption.

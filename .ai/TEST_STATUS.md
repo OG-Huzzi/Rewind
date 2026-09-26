@@ -1,7 +1,30 @@
 # Phase 1 Test Status
 
-Status after Phase 4 first slice. Newer records are at the top; the Phase 3
-and Phase 1.3 records are preserved below.
+Status after Phase 5 (platform expansion). Newer records are at the top; the
+Phase 4, Phase 3, and Phase 1.3 records are preserved below.
+
+## Phase 5 (platform expansion — POSIX named pipes)
+
+Local suite on Windows (x86_64-pc-windows-gnu, Rust 1.98.1): **149 passed /
+0 failed** (`cargo test --all-targets`; fmt, clippy
+`--all-targets --all-features -- -D warnings`, `cargo test --doc` green).
+The new `tests/phase5_platform.rs` suite runs 1 model-level test
+(backward-compatible serde) on every platform and 4 POSIX-gated tests — FIFO
+scan classification, FIFO create/undo/redo with recorded mode, FIFO→file
+replacement reversibility, and the UNIX_SOCKET refusal — which the local
+Windows host **cannot execute**; they are verified by the Linux and macOS CI
+jobs (this is the same pattern as Phase 1.1: local cross-checks are exactly
+what CI covers). Windows behavior for all pre-existing object types is
+unchanged and covered by the unchanged Windows CI job.
+
+Deliberate-failure checks: `plan.rs` blocks undo at plan time for
+unsupported objects on either side of an effect (asserted by the socket
+refusal test); `NamedPipe` reports restore-support so the same machinery
+now admits FIFOs.
+
+The 148-test record below describes `1f37ec3` before the Phase 5 work.
+
+---
 
 ## Phase 4 first slice (time-range history view)
 

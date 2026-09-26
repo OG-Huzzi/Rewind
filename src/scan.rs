@@ -185,11 +185,18 @@ fn visit_directory(
                 target_hash,
                 metadata: metadata_fingerprint(&metadata),
             }
+        } else if fifo_file_type(&file_type) {
+            // A FIFO is classified from its file type alone: opening or
+            // reading it would block or consume data, and its in-flight
+            // content is kernel state that no manifest can hold. Only the
+            // existence and the recorded mode are state.
+            Fingerprint::NamedPipe {
+                metadata: metadata_fingerprint(&metadata),
+            }
         } else {
-            let descriptor = format!("{file_type:?}");
             unsupported.push(relative.clone());
             Fingerprint::Unsupported {
-                object_kind: descriptor,
+                object_kind: unsupported_object_kind(&file_type).to_owned(),
                 descriptor: metadata.len().to_string(),
             }
         };
@@ -387,6 +394,46 @@ mod reparse_tag {
             ))
         }
     }
+}
+
+/// Platform gate for the FIFO classification: Unix file types know they
+/// are FIFOs; on Windows the scanner can never see one, so the branch is
+/// statically false there.
+fn fifo_file_type(file_type: &std::fs::FileType) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileTypeExt;
+        file_type.is_fifo()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = file_type;
+        false
+    }
+}
+
+/// Names the unsupported object class instead of a platform debug string, so
+/// a refusal tells the user what was actually found (Phase 5 capability
+/// matrix). Unknown classes still fall back to the file type's own name.
+fn unsupported_object_kind(file_type: &std::fs::FileType) -> &'static str {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileTypeExt;
+        if file_type.is_socket() {
+            return "UNIX_SOCKET";
+        }
+        if file_type.is_char_device() {
+            return "CHARACTER_DEVICE";
+        }
+        if file_type.is_block_device() {
+            return "BLOCK_DEVICE";
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = file_type;
+    }
+    "UNSUPPORTED_SPECIAL"
 }
 
 fn metadata_fingerprint(metadata: &fs::Metadata) -> MetadataFingerprint {

@@ -888,10 +888,10 @@ fn doctor() -> Result<i32> {
     }
     if let Some(baseline) = status.baseline {
         let state = workspace.storage.catalog.state(&baseline)?;
-        let (files, directories, unsupported) = state_summary(&state.manifest);
+        let (files, directories, named_pipes, unsupported) = state_summary(&state.manifest);
         println!(
-            "baseline {} files={} directories={} unsupported={}",
-            baseline, files, directories, unsupported
+            "baseline {} files={} directories={} named_pipes={} unsupported={}",
+            baseline, files, directories, named_pipes, unsupported
         );
         for fingerprint in state.manifest.entries.values() {
             if let crate::model::Fingerprint::RegularFile { content_hash, .. } = fingerprint {

@@ -65,6 +65,15 @@ pub enum Fingerprint {
         target_hash: String,
         metadata: MetadataFingerprint,
     },
+    /// A POSIX named pipe (FIFO). Phase 5 platform expansion: a FIFO is a
+    /// kernel synchronization object, not a data container, so only its
+    /// existence and metadata are state; there is no content hash. The
+    /// scanner produces this variant on Unix only (Windows cannot scan it);
+    /// restoring it on a platform that cannot create FIFOs is refused with
+    /// an explicit unsupported error rather than guessed at.
+    NamedPipe {
+        metadata: MetadataFingerprint,
+    },
     Unsupported {
         object_kind: String,
         descriptor: String,
@@ -78,6 +87,7 @@ impl Fingerprint {
             Self::RegularFile { .. } => "REGULAR_FILE",
             Self::Directory { .. } => "DIRECTORY",
             Self::Symlink { .. } => "SYMLINK",
+            Self::NamedPipe { .. } => "NAMED_PIPE",
             Self::Unsupported { .. } => "UNSUPPORTED",
         }
     }
@@ -85,7 +95,11 @@ impl Fingerprint {
     pub fn is_supported_for_restore(&self) -> bool {
         matches!(
             self,
-            Self::Absent | Self::RegularFile { .. } | Self::Directory { .. } | Self::Symlink { .. }
+            Self::Absent
+                | Self::RegularFile { .. }
+                | Self::Directory { .. }
+                | Self::Symlink { .. }
+                | Self::NamedPipe { .. }
         )
     }
 
@@ -135,6 +149,9 @@ impl Fingerprint {
                     SymlinkTargetKind::Unknown => "unknown",
                 };
                 format!("SYMLINK(target_hash={target_hash},target={target},kind={kind})")
+            }
+            Self::NamedPipe { metadata } => {
+                format!("NAMED_PIPE(mode={:?})", metadata.mode)
             }
             Self::Unsupported {
                 object_kind,

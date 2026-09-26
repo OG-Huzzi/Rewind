@@ -347,3 +347,33 @@ state is a presentation of uncertainty as reversibility.
 Package-manager activity remains visible in history exactly as any other
 command capture. Recipes return only when a use case adds provable evidence,
 such as recording a lockfile fingerprint as part of strong capture.
+
+## ADR-017: POSIX named pipes are first-class; special files stay refused
+
+### Context
+Every non-file, non-directory, non-symlink object was recorded as
+UNSUPPORTED, and one unsupported object in a captured state made the whole
+operation irreversible — so an ordinary POSIX workspace containing a FIFO
+could not roll back at all.
+
+### Decision
+Support POSIX FIFOs as a first-class object type (`Fingerprint::NamedPipe`):
+existence and permission mode are the entire state; there is no content
+hash. The scanner classifies from file type alone (never opens or reads the
+pipe), restore creates it with a private 0o600 mode before applying the
+recorded mode, inside the existing journal/quarantine/confinement/
+verification machinery. Unix sockets, character and block devices keep
+precise refusal descriptors and stay unsupported; on Windows the scanner can
+never produce the variant and a foreign manifest containing it is refused at
+materialization.
+
+### Alternatives
+Leave FIFOs unsupported (rollback stays poisoned), or generalize to all
+special files including sockets and device nodes (unrestorable runtime or
+machine state).
+
+### Consequences
+Workspaces with FIFOs roll back deterministically on Linux and macOS; the
+capability matrix (`.ai/PHASE_5_PLATFORM_EXPANSION.md` §3) is the normative
+object×platform record. Extended attributes, ACLs, ownership, and sparse
+files remain deferred until they can be recorded *and* restored faithfully.

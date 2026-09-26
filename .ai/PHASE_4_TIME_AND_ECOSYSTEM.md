@@ -1,8 +1,12 @@
 # Phase 4 Contract — Time and Ecosystem Integrations
 
-Status: CONTRACT (implementation follows this document). Baseline for this
-phase: `main` at `c4aeef7` (Phase 3 verified; Phase 3 audit fixes merged via
-PR #1; local suite 129 passed / 0 failed before any Phase 4 change).
+Status: **IMPLEMENTED** (commit `1f37ec3` on `main`; CI run 36228897539
+green on ubuntu, macOS and Windows; 148 passed / 0 failed locally). The
+contract text below is the pre-implementation record, preserved verbatim
+except for this status line and the corrected ADR reference. Baseline for
+the phase was `main` at `c4aeef7` (Phase 3 verified; Phase 3 audit fixes
+merged via PR #1; local suite 129 passed / 0 failed before any Phase 4
+change).
 
 ## 1. Scope
 
@@ -139,7 +143,8 @@ existing generic command capture, so a recipe layer adds presentation, not
 capability. **Deferred** until a use case is identified where a recipe can
 add provable evidence (e.g. recording a package manifest fingerprint as
 part of strong capture) rather than cosmetic labels. See DECISIONS.md
-ADR-011.
+ADR-016 (the original text here cited ADR-011, which is a different
+decision; the numbering was verified and corrected after implementation).
 
 ## 7. Testable acceptance criteria
 
