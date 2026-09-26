@@ -227,7 +227,7 @@ mod posix {
                 "rm runtime.sock".to_owned(),
             ])
             .expect("capture socket deletion");
-        let refusal = undo(&workspace, Some(outcome.operation_id), false);
+        let refusal = undo(&workspace, outcome.operation_id, false);
         assert!(
             refusal.is_err(),
             "undo of an unsupported-object operation must be refused"

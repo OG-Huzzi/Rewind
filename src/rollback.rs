@@ -621,9 +621,7 @@ fn apply_step(
                 )));
             }
         }
-        Fingerprint::NamedPipe {
-            metadata: desired_metadata,
-        } => {
+        Fingerprint::NamedPipe { .. } => {
             // A FIFO is a kernel object with no content: create it with a
             // private mode first (no window where a manifest-unspecified
             // world-accessible pipe exists), then apply the recorded
@@ -632,7 +630,6 @@ fn apply_step(
             // touching anything.
             #[cfg(not(unix))]
             {
-                let _ = desired_metadata;
                 return Err(RewindError::Unsupported(format!(
                     "named pipes cannot be restored on this platform: {path}"
                 )));
