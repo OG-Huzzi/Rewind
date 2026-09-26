@@ -893,7 +893,22 @@ fn create_symlink(
 
 fn sync_target(path: &Path) -> Result<()> {
     let metadata = fs::symlink_metadata(path)?;
-    if !metadata.file_type().is_symlink() {
+    // A FIFO must never be opened, not even for reading: open(2) on a FIFO
+    // blocks until a writer appears, which is exactly what hung the POSIX CI
+    // jobs for hours. A FIFO has no byte content to make durable; the
+    // durability of its directory entry is the parent fsync below.
+    let is_fifo = {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::FileTypeExt;
+            metadata.file_type().is_fifo()
+        }
+        #[cfg(not(unix))]
+        {
+            false
+        }
+    };
+    if !metadata.file_type().is_symlink() && !is_fifo {
         match fs::OpenOptions::new().read(true).open(path) {
             Ok(file) => {
                 #[cfg(unix)]
