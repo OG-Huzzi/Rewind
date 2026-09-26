@@ -8,6 +8,33 @@ Status: Phase 3 (continuous observation) complete and CI-verified
 `4d89a2f`: ubuntu, macOS and windows all green) and documented in
 `.ai/PHASE_2_VERIFICATION_REPORT.md` (**Phase 2 VERIFIED**).
 
+## Post-Phase-3 audit fixes (branch `fix/phase3-watcher-quoting`)
+
+Two audit defects fixed on top of `796ced6` (commit `c881ba3` plus a
+follow-up hardening commit on the same branch):
+
+- **Multi-path notification truncation** (`src/watch/adapter.rs`): a
+  notification carrying several paths mapped to several `RawEvent`s but
+  `poll()` returned only the first. The adapter now retains the remainder
+  in a `VecDeque` capped at `PENDING_CAPACITY` (4096) and delivers queued
+  events before polling the channel. A batch larger than the capacity is
+  truncated at the cap and reported as `Overflow` once the preserved
+  prefix drains — the un-preserved remainder becomes a durable OVERFLOW
+  degradation (unknown interval → reconciliation), never silent loss.
+- **Windows argument quoting** (`src/watch/detach_windows.rs`): plain
+  `"{argument}"` wrapping let a trailing backslash escape the closing
+  quote (CRT parsers read `\"` as a literal quote and glue the following
+  arguments). `quote()` now implements the MSVCRT rules (2n+1 backslashes
+  before an embedded quote, 2n before the closing quote); embedded quotes
+  are escaped instead of rejected. A local probe proved the Rust child
+  (`std::env::args`) follows the CRT rules and that `CommandLineToArgvW`
+  follows different rules, so the CRT rules are the round-trip reference.
+
+Local suite on the branch: 129 passed / 0 failed (49 lib unit incl. the
+new capacity tests, 17 `phase3_watcher` incl. a real detached-spawn
+end-to-end test; every Phase 1/2 suite unchanged and green). Platform
+verification for the branch happens through its PR CI run.
+
 ## Completed in Phase 3
 
 - The advisory watcher subsystem (see `.ai/PHASE_3_VERIFICATION_REPORT.md`

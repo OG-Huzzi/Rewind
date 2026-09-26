@@ -271,6 +271,11 @@ mod tests {
         assert_eq!(quote("a\\\\"), "\"a\\\\\\\\\"");
         // Empty argument round-trips as an empty argv slot.
         assert_eq!(quote(""), "\"\"");
+        // Non-ASCII passes through unchanged: quoting operates on chars, and
+        // `wide` converts the finished command line to UTF-16.
+        assert_eq!(quote("café-日本語"), "\"café-日本語\"");
+        // Non-ASCII combined with a trailing backslash still doubles it.
+        assert_eq!(quote("日本語dir\\"), "\"日本語dir\\\\\"");
     }
 
     /// Reference decoder: an independent scanner implementing the CRT
@@ -362,6 +367,9 @@ mod tests {
             vec!["a\\\\"],
             vec![""],
             vec!["x y", "z\\", "q\"r", ""],
+            // Non-ASCII survives the wide-character conversion untouched.
+            vec!["café-日本語"],
+            vec!["日本語 dir\\", "café\\"],
             // A full production command line.
             vec![
                 "D:\\Program Files\\rewind.exe",
@@ -400,9 +408,11 @@ mod tests {
 
     /// The production spawn path with the argument shape that exposed the
     /// quoting bug: a workspace root ending in a backslash. The spawn must
-    /// succeed and — because the command line now round-trips through
-    /// CommandLineToArgvW (tested above) — the child receives the intended
-    /// root, not a mangled one.
+    /// succeed, and the serialized command line round-trips through the CRT
+    /// parsing rules (tested above), so the child receives the intended
+    /// root, not a mangled one. The end-to-end proof that a real child
+    /// receives the intended arguments lives in the integration suite
+    /// (`tests/phase3_watcher.rs`), which can locate the real binary.
     #[test]
     fn spawn_detached_accepts_a_drive_root_ending_in_a_backslash() {
         let exe = std::env::current_exe().unwrap();

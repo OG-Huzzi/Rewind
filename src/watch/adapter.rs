@@ -108,6 +108,18 @@ pub fn map_notify_event(event: &notify::Event) -> Vec<RawEvent> {
     }
 }
 
+/// Upper bound on mapped raw events retained between [`NotifyAdapter::poll`]
+/// calls. Notifications normally carry a handful of paths, but a platform may
+/// coalesce a very large batch into one notification (FSEvents in
+/// particular), and without a cap a single such batch would be retained in
+/// full — an allocation sized by the platform rather than by this crate.
+/// When a batch does not fit, the retained portion is capped at this many
+/// events and the adapter reports [`AdapterOutput::Overflow`] once the
+/// preserved prefix has been delivered: the un-preserved remainder is
+/// recorded through the existing degradation path (unknown interval →
+/// authoritative reconciliation), never silently absorbed.
+const PENDING_CAPACITY: usize = 4096;
+
 /// The production adapter over `notify::RecommendedWatcher`.
 pub struct NotifyAdapter {
     watcher: Option<notify::RecommendedWatcher>,
@@ -117,10 +129,16 @@ pub struct NotifyAdapter {
     /// several paths (FSEvents batches; the mapper fans them out), and the
     /// adapter's API returns one event per poll, so the remainder must be
     /// retained here — dropping them would silently discard changes the
-    /// platform already delivered. The queue drains on every poll, so it
-    /// holds at most one notification's worth of mapped events between
-    /// polls; it is never a new unbounded buffer.
+    /// platform already delivered. The queue drains before every channel
+    /// receive, so it holds events from at most one notification, and its
+    /// size is capped at [`PENDING_CAPACITY`]; see that constant for what
+    /// happens when a batch does not fit.
     pending: VecDeque<RawEvent>,
+    /// Set when a received batch exceeded [`PENDING_CAPACITY`] and part of
+    /// it could not be preserved. Reported once as
+    /// [`AdapterOutput::Overflow`] after the retained prefix drains, so the
+    /// loss becomes a durable degradation instead of silence.
+    pending_truncated: bool,
     root: PathBuf,
 }
 
@@ -139,6 +157,7 @@ impl NotifyAdapter {
             watcher: Some(watcher),
             receiver,
             pending: VecDeque::new(),
+            pending_truncated: false,
             root: root.to_path_buf(),
         })
     }
@@ -172,6 +191,14 @@ impl EventAdapter for NotifyAdapter {
         if let Some(raw) = self.pending.pop_front() {
             return AdapterOutput::Event(raw);
         }
+        if self.pending_truncated {
+            // The batch that filled the queue did not fit: what could not be
+            // preserved must not be silently absorbed. The loop turns this
+            // into the durable OVERFLOW degradation, which keeps the covered
+            // interval unknown until authoritative reconciliation.
+            self.pending_truncated = false;
+            return AdapterOutput::Overflow;
+        }
         match self.receiver.recv_timeout(timeout) {
             Ok(Ok(event)) => {
                 if event.need_rescan() {
@@ -182,9 +209,16 @@ impl EventAdapter for NotifyAdapter {
                     AdapterOutput::Idle
                 } else {
                     // Every mapped event must reach the pipeline: return the
-                    // first and retain the rest for the following polls.
+                    // first and retain the rest for the following polls. When
+                    // the batch exceeds the retention capacity, the retained
+                    // portion is capped and the overflow is reported after it
+                    // drains — recorded loss, never silent truncation.
                     let mut mapped: VecDeque<_> = events.into();
                     let first = mapped.pop_front().expect("non-empty");
+                    if mapped.len() > PENDING_CAPACITY {
+                        mapped.truncate(PENDING_CAPACITY);
+                        self.pending_truncated = true;
+                    }
                     self.pending.extend(mapped);
                     AdapterOutput::Event(first)
                 }
@@ -334,7 +368,24 @@ mod tests {
             watcher: None,
             receiver,
             pending: VecDeque::new(),
+            pending_truncated: false,
             root: PathBuf::from("/w"),
+        };
+        (adapter, sender)
+    }
+
+    /// Builds the production adapter like [`production_adapter`], but rooted
+    /// at a real directory so the serve loop can confine against it.
+    fn rooted_production_adapter(
+        root: &Path,
+    ) -> (NotifyAdapter, mpsc::Sender<notify::Result<notify::Event>>) {
+        let (sender, receiver) = mpsc::channel();
+        let adapter = NotifyAdapter {
+            watcher: None,
+            receiver,
+            pending: VecDeque::new(),
+            pending_truncated: false,
+            root: root.to_path_buf(),
         };
         (adapter, sender)
     }
@@ -514,6 +565,131 @@ mod tests {
                 .count();
             assert_eq!(count, 1, "{name} must appear exactly once in the log");
         }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Regression (audit follow-up, queue capacity): a single notification
+    /// may carry more paths than the adapter retains between polls. The
+    /// preserved prefix must still arrive — every event, in order, exactly
+    /// once — and the part that could not be preserved must surface as
+    /// [`AdapterOutput::Overflow`] once the prefix drains, so the serve loop
+    /// records the degradation instead of the loss passing silently.
+    #[test]
+    fn poll_reports_overflow_when_a_batch_exceeds_the_pending_capacity() {
+        let (mut adapter, sender) = production_adapter();
+        let total = PENDING_CAPACITY + 5;
+        let mut batched = notify::Event::new(EventKind::Create(CreateKind::Any));
+        batched.paths = (0..total)
+            .map(|index| PathBuf::from(format!("/w/f{index}.txt")))
+            .collect();
+        sender.send(Ok(batched)).expect("send oversized batch");
+
+        // The first event plus the full retained capacity arrive in order.
+        for index in 0..(PENDING_CAPACITY + 1) {
+            let expected = PathBuf::from(format!("/w/f{index}.txt"));
+            match adapter.poll(Duration::ZERO) {
+                AdapterOutput::Event(raw) => assert_eq!(raw.paths, vec![expected.clone()]),
+                other => panic!("expected event {expected:?}, got {other:?}"),
+            }
+        }
+        // The un-preserved remainder is reported, then the adapter is quiet
+        // again — exactly one Overflow, no duplicated or delayed events.
+        assert!(
+            matches!(adapter.poll(Duration::ZERO), AdapterOutput::Overflow),
+            "capacity exhaustion must be reported as Overflow"
+        );
+        assert!(matches!(adapter.poll(Duration::ZERO), AdapterOutput::Idle));
+    }
+
+    /// End-to-end capacity exhaustion through the real serve loop: an
+    /// oversized batch delivered via the production adapter's channel leaves
+    /// the preserved prefix in the dirty index and event log, and the loss
+    /// becomes a durable OVERFLOW degradation record — the marker the
+    /// enforcement point converts into an unknown interval that only a
+    /// successful reconciliation clears.
+    ///
+    /// The batch repeats a small set of paths: the capacity limit counts
+    /// events, not distinct paths, so truncation and the Overflow behave
+    /// identically while the loop's per-event dirty-index rewrite stays
+    /// bounded (the index holds the five names after the first few events).
+    /// Distinct-path delivery through this same loop is covered by
+    /// `serve_loop_ingests_every_path_of_a_batched_notification`.
+    #[test]
+    fn serve_loop_records_a_degradation_when_capacity_is_exhausted() {
+        use crate::watch::model::{read_degradations, DegradationReason};
+        use crate::watch::run::{serve_loop, LoopExit, WatchConfig, WatchPaths};
+        use uuid::Uuid;
+
+        let root = tempfile::tempdir().expect("tempdir").keep();
+        let paths = WatchPaths::new(&root);
+        let (mut adapter, sender) = rooted_production_adapter(&root);
+        let total = PENDING_CAPACITY + 5;
+        let mut batched = notify::Event::new(EventKind::Create(CreateKind::Any));
+        batched.paths = (0..total)
+            .map(|index| root.join(format!("f{}.txt", index % 5)))
+            .collect();
+        sender.send(Ok(batched)).expect("send oversized batch");
+
+        let loop_root = root.clone();
+        let loop_paths = paths.clone();
+        let workspace_id = Uuid::new_v4();
+        let watch_config = WatchConfig {
+            batch: Duration::from_millis(50),
+            ..WatchConfig::default()
+        };
+        let handle = std::thread::spawn(move || {
+            serve_loop(
+                &loop_paths,
+                &loop_root,
+                workspace_id,
+                &mut adapter,
+                &watch_config,
+            )
+            .expect("serve loop")
+        });
+
+        // The degraded.json marker must appear: the loss is recorded.
+        let degradations_path = paths.degradations.clone();
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            if read_degradations(&degradations_path).is_some_and(|marker| {
+                marker
+                    .records
+                    .iter()
+                    .any(|record| record.reason == DegradationReason::Overflow)
+            }) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "capacity exhaustion must record an OVERFLOW degradation"
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        }
+
+        crate::paths::atomic_write(&paths.stop_flag, b"stop\n").expect("stop flag");
+        assert_eq!(handle.join().expect("join"), LoopExit::Stopped);
+
+        // The preserved prefix reached the dirty index: the five distinct
+        // paths the batch carried. The index may also legitimately contain
+        // `watch/…` artifact paths — in this test the store directory sits
+        // inside the watched root (in production it lives outside), so the
+        // restarted watcher observes the loop's own state and stop writes.
+        let index = std::fs::read_to_string(&paths.dirty).expect("dirty index");
+        let index: crate::watch::model::DirtyIndex = serde_json::from_str(&index).expect("parse");
+        let mut delivered: Vec<String> = index
+            .paths
+            .iter()
+            .filter(|path| path.ends_with(".txt") && !path.starts_with("watch/"))
+            .cloned()
+            .collect();
+        delivered.sort();
+        let mut expected: Vec<String> = (0..5).map(|i| format!("f{i}.txt")).collect();
+        expected.sort();
+        assert_eq!(
+            delivered, expected,
+            "the preserved prefix must reach the dirty index in full"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }

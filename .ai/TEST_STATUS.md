@@ -3,6 +3,41 @@
 Status after Phase 3 (continuous observation). The Phase 3 record is at the
 top; the Phase 1.3 status is preserved below.
 
+## Post-Phase-3 audit-fix branch (`fix/phase3-watcher-quoting`)
+
+Local suite on the branch (x86_64-pc-windows-gnu, Rust 1.98.1): **129
+passed / 0 failed** (`cargo test --all-targets`, run twice; fmt, clippy
+`--all-targets --all-features -- -D warnings`, and `cargo test --doc` all
+green): 49 lib unit tests (the 47 from `c881ba3` plus 2 new capacity
+tests), 10 boundary_correlation, 13 foundation, 8 hardening,
+15 phase2_dependency, **17 `phase3_watcher`** (16 plus a real
+detached-spawn end-to-end test), 9 rollback_tree, 8 shell_integration.
+
+New on the branch, beyond `c881ba3`:
+
+- Adapter queue capacity: `poll_reports_overflow_when_a_batch_exceeds_the_pending_capacity`
+  (a batch over `PENDING_CAPACITY` delivers its preserved prefix in order,
+  exactly once, then reports `Overflow` once, then idles) and
+  `serve_loop_records_a_degradation_when_capacity_is_exhausted`
+  (production channel → serve loop → durable OVERFLOW record + preserved
+  prefix in the dirty index). The exhaustion tests were verified to fail
+  with the capacity check disabled.
+- Windows detached spawn end-to-end: `detached_spawn_delivers_the_intended_root_to_a_real_child`
+  spawns the real binary through the production detached path with a
+  `--root` containing a space and a trailing backslash; the child must
+  discover the workspace, report a fresh heartbeat, and stop cleanly.
+  Verified to fail against the pre-fix `format!("\"{argument}\"")`
+  quoting. Note: this test cannot distinguish a *dropped* trailing
+  separator (invisible to discovery) — that variant is pinned by the
+  byte-exact serialization table, the CRT round-trip decoder, and the
+  real-child clap echo test.
+- Unicode quoting cases in the serialization table, the CRT round-trip,
+  and the real-child clap echo test.
+
+The 119-test record below describes `796ced6` before the fix branch.
+
+---
+
 **Full suite after Phase 3: 119 passed / 0 failed** (`cargo test
 --all-targets`, x86_64-pc-windows-gnu, Rust 1.98.1, bash on PATH so the
 shell-integration tests ran rather than skipped), **and CI run #36111890265
