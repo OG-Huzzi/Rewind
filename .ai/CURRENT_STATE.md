@@ -1,8 +1,9 @@
 # Current Implementation State
 
 Status: Phase 5 slice 2 — **Windows junctions as first-class objects —
-implemented** (contract `.ai/PHASE_5_WINDOWS_JUNCTIONS.md`, ADR-019;
-local Windows suite green; CI status recorded in TEST_STATUS.md). The
+implemented and CI-verified** (contract `.ai/PHASE_5_WINDOWS_JUNCTIONS.md`,
+ADR-019; commits `33238bc` + `0f96706`; CI run #46 green on
+ubuntu/macOS/Windows — see TEST_STATUS.md). The
 rollback-performance phase (measurement-driven, ADR-018) remains
 **implemented and CI-verified** — per-step rollback verification observes
 only the affected path; 400-file undo ≈ 15.8 min → ≈ 1.25 min (debug) with

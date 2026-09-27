@@ -63,6 +63,21 @@ POSIX cannot produce the variant; ubuntu/macOS CI runs the two model-level
 tests plus the unchanged suites (the junction restore refusal path off
 Windows is compile-gated the same way the FIFO path is).
 
+CI: the phase commit `33238bc` (run #45, 2026-09-27) was fully green on
+**windows-latest** — including the Tests step that executed all five
+junction lifecycle tests on a real MSVC runner — but ubuntu-latest and
+macos-latest failed clippy on `variants Junction and Refuse are never
+constructed`: the Windows-only `ReparseClassification` variants are
+matched on every platform but constructed only by the Windows classifier,
+a dead-code finding invisible to the Windows-host clippy (the same
+Phase 1.2 pattern). Fixed on `0f96706` with
+`cfg_attr(not(windows), allow(dead_code))` on exactly those two variants,
+documenting that POSIX's classifier is a constant `Continue`. **Run #46
+(`36297995921`) on `0f96706` is green on ubuntu-latest, macos-latest, and
+windows-latest** — Format, Compile (all targets), Clippy (-D warnings),
+and Tests all success on every job, verified per-job through the GitHub
+API.
+
 The 152-test record below describes `7de39b4` before this slice.
 
 ---
