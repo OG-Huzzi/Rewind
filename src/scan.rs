@@ -170,11 +170,17 @@ enum ReparseClassification {
     /// with the normal file/directory/symlink classification.
     Continue,
     /// A junction whose substitute and print names were read completely.
+    /// Constructed on Windows only (POSIX has no reparse points, so its
+    /// classifier is a constant `Continue`), but matched on every platform
+    /// so the classification contract stays exhaustively type-checked.
+    #[cfg_attr(not(windows), allow(dead_code))]
     Junction {
         substitute: String,
         print_name: String,
     },
     /// The object must be recorded as unsupported; the reason is final.
+    /// Constructed on Windows only; see `Junction` above.
+    #[cfg_attr(not(windows), allow(dead_code))]
     Refuse(Fingerprint),
 }
 
