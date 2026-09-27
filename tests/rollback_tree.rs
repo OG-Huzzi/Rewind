@@ -690,52 +690,14 @@ fn archive_of_quarantined_file_succeeds_and_staging_is_cleaned() {
     assert_eq!(condition(&fixture.workspace), WorkspaceCondition::Healthy);
 }
 
-/// Windows junctions must be classified as unsupported objects (V-F03), and
-/// an operation whose target state contains one must not be undoable.
-#[test]
-#[cfg(windows)]
-fn junction_is_unsupported_object() {
-    let fixture = init_fixture();
-    let root = fixture.root.path().to_path_buf();
-    fs::create_dir(root.join("sub")).expect("target dir");
-    fs::write(root.join("sub").join("target.txt"), b"TARGETDATA").expect("target file");
-    let outcome = fixture
-        .workspace
-        .run_command(&[
-            "cmd".to_owned(),
-            "/C".to_owned(),
-            "mklink /J junc sub".to_owned(),
-        ])
-        .expect("capture junction creation");
-    let operation_id = outcome.operation_id.expect("operation id");
-    fixture
-        .workspace
-        .reconcile_locked("junction classification")
-        .expect("reconcile");
-    let baseline = fixture
-        .workspace
-        .state_manifest(&fixture.workspace.baseline_id().expect("baseline"))
-        .expect("baseline manifest");
-    match baseline.get("junc") {
-        Fingerprint::Unsupported { object_kind, .. } => {
-            assert_eq!(object_kind, "WINDOWS_JUNCTION");
-        }
-        other => panic!("junction must be unsupported, got {}", other.kind_name()),
-    }
-
-    // The operation is not fully reversible because its post state contains
-    // an unsupported object; undo must refuse rather than follow or replace.
-    let refusal = undo(&fixture.workspace, Some(operation_id), false);
-    assert!(
-        refusal.is_err(),
-        "undo of an unsupported-object operation must be refused"
-    );
-    assert!(root.join("junc").exists(), "junction untouched by refusal");
-    assert_eq!(
-        fs::read(root.join("sub").join("target.txt")).expect("target intact"),
-        b"TARGETDATA"
-    );
-}
+// Windows junctions are first-class objects since Phase 5 slice 2
+// (`.ai/PHASE_5_WINDOWS_JUNCTIONS.md`): the junction lifecycle —
+// classification, capture, undo, redo, divergence refusal, external and
+// dangling targets — is owned by the `junctions` module in
+// `tests/phase5_platform.rs`. The retired premise of this test (junctions
+// as unsupported objects) is documented in the slice-2 contract; the
+// unsupported-object refusal machinery itself remains witnessed by the
+// POSIX unix-socket test there.
 
 fn workspace_journal(workspace: &Workspace, path: &Path) -> Journal {
     workspace.storage.journals.load(path).expect("journal json")

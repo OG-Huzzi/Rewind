@@ -53,7 +53,7 @@ three CI platforms (ubuntu, macOS) — not merely compiled.
 |---|---|---|
 | Unix domain sockets, character/block devices | POSIX | Remain `UNSUPPORTED`. Sockets are runtime state (nothing meaningful to restore); device nodes require privileges and are machine state, not workspace state. Scan descriptors made precise (`UNIX_SOCKET`, `CHARACTER_DEVICE`, `BLOCK_DEVICE`) so refusals name what was found. |
 | Named pipes as workspace objects | Windows | N/A — NTFS has no FIFO filesystem objects; the scanner never produces the new fingerprint. A manifest *containing* `NamedPipe` (foreign store) is refused at materialization with an explicit unsupported error rather than guessed at. |
-| Windows junctions / other reparse points | Windows | Remain `UNSUPPORTED` (existing safety decision, unchanged). |
+| Windows junctions / other reparse points | Windows | Remain `UNSUPPORTED` (existing safety decision, unchanged). **Amended 2026-09 (slice 2, `.ai/PHASE_5_WINDOWS_JUNCTIONS.md`): junctions are now first-class literal-leaf objects — see the matrix in §3.** |
 | Extended attributes, ACLs, alternate data streams | all | Deferred. Recording them without restoring them faithfully would claim metadata support that does not exist. |
 | Sparse files, file flags (chflags), ownership (uid/gid) | POSIX | Deferred; ownership restoration in particular would require privilege assumptions CI cannot verify. |
 
@@ -69,8 +69,8 @@ on that platform.
 | Directory | supported | supported | supported | |
 | Symlink (inside-root target) | supported | supported | supported | Windows flavor from reparse data |
 | Symlink (escaping / unknown target) | recorded, restore refused | recorded, restore refused | recorded, restore refused | never followed |
-| Windows junction | N/A | N/A | unavailable (restore refused) | `WINDOWS_JUNCTION` |
-| Other reparse point | N/A | N/A | unavailable (restore refused) | tag recorded when readable |
+| Windows junction | N/A | N/A | **supported** (slice 2) | `WINDOWS_JUNCTION`; literal leaf: reparse data (substitute + print names) + readonly recorded and restored byte-faithfully; never followed — see `.ai/PHASE_5_WINDOWS_JUNCTIONS.md` |
+| Other reparse point | N/A | N/A | unavailable (restore refused) | tag value recorded in the descriptor when readable |
 | **Named pipe (FIFO)** | **supported** | **supported** | unavailable (restore refused) | **new**; existence + mode only, no content |
 | Unix domain socket | unavailable (restore refused) | unavailable (restore refused) | N/A | `UNIX_SOCKET` |
 | Character / block device | unavailable (restore refused) | unavailable (restore refused) | N/A | descriptor names the device class |

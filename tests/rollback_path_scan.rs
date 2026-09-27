@@ -82,6 +82,26 @@ fn path_scoped_fingerprints_match_the_full_scan() {
             .expect("reconcile");
     }
 
+    #[cfg(windows)]
+    {
+        // Junctions enter through the platform's own mklink: one live, one
+        // dangling (its target never followed or checked for existence).
+        // A readonly junction entry cannot be produced with built-in
+        // tooling (attrib follows the junction), so that shape is covered
+        // by the contract's disclosed gap instead.
+        for (name, target) in [("junc", "nested"), ("dangling", "does-not-exist")] {
+            let status = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J", name, target])
+                .current_dir(root.path())
+                .status()
+                .expect("run mklink");
+            assert!(status.success(), "mklink /J {name} -> {target} failed");
+        }
+        workspace
+            .reconcile_locked("junction classification")
+            .expect("reconcile");
+    }
+
     let baseline_id = workspace.baseline_id().expect("baseline");
     let manifest = workspace
         .state_manifest(&baseline_id)
@@ -97,6 +117,18 @@ fn path_scoped_fingerprints_match_the_full_scan() {
         assert_eq!(
             full, scoped,
             "path-scoped fingerprint diverged from the full scan for {path}"
+        );
+    }
+
+    // Junctions must classify identically through both observation paths and
+    // never be traversed by either (Phase 5 slice 2, AC8).
+    #[cfg(windows)]
+    {
+        assert_eq!(manifest.get("junc").kind_name(), "WINDOWS_JUNCTION");
+        assert_eq!(manifest.get("dangling").kind_name(), "WINDOWS_JUNCTION");
+        assert!(
+            manifest.entries.keys().all(|key| !key.starts_with("junc/")),
+            "neither observation path may traverse a junction"
         );
     }
 

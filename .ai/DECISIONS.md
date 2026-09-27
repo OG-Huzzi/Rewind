@@ -413,3 +413,58 @@ Rollback time becomes O(files + Σ touched subtrees) instead of
 O(steps × files). Unrelated-path scan errors now surface at the final scan
 rather than mid-operation (same RecoveryRequired class, later timing). No
 durability, confinement, quarantine, or identity change.
+
+## ADR-019: Windows junctions are first-class literal-leaf objects
+
+### Context
+Junctions (mount-point reparse points) were classified
+`UNSUPPORTED(WINDOWS_JUNCTION)`, making any operation whose captured state
+contains one irreversible — the Windows equivalent of the FIFO poisoning
+slice 1 fixed. The capability matrix deferred them as "an existing safety
+decision, unchanged"; the roadmap gate required a contract amendment before
+any expansion.
+
+### Decision
+Record junctions as a new `Fingerprint::Junction` literal leaf whose state
+is its reparse data (substitute name + print name), a hash of the pair, and
+the entry's own readonly attribute. Restore recreates a plain directory,
+applies the recorded attributes while it is still plain, then sets the
+recorded reparse data via `FSCTL_SET_REPARSE_POINT` and requires a read-back
+match. The junction is never followed anywhere: not by the scanner, not by
+restoration (escaping and dangling targets restore literally, like POSIX
+symlinks pointing outside the workspace), not by parent-chain confinement
+(a junction in any parent chain still refuses the mutation). Quarantined
+junctions are not archived (no content; the recorded fingerprint is the
+recovery record) — same best-effort posture as FIFOs, with a correctly named
+refusal replacing the previous mislabeled one. Contract:
+`.ai/PHASE_5_WINDOWS_JUNCTIONS.md` (probe-verified mechanics: buffer
+layout, FSCTL `0x000900A4`, byte-identical round trip, rename/quarantine
+behavior, dangling-target restore).
+
+### Alternatives
+Treat junctions as symlinks (wrong object class: different reparse tag,
+resolution rules, and creation API; std's file-type check cannot even
+distinguish them). Archive junctions by re-creating them in the archive (adds
+an out-of-workspace reparse creation for no data-safety gain — a junction
+has no content). Refuse restoration of escaping targets (would need target
+resolution to decide, which the never-follow rule forbids; POSIX symlinks
+already restore escaping targets literally). Defer the slice (leaves the
+most common Windows poisoning case unfixed).
+
+### Rationale
+A junction is a deterministic, content-free directory entry whose entire
+state is machine-readable bytes; recording and re-writing those bytes is
+exactly the existing literal-leaf pattern (symlinks) applied to one more
+reparse tag. Every safety anchor stays where it was: per-step conflict
+gates, quarantine-by-rename, parent confinement, final full-scan state
+comparison, and the unsupported-object refusals for everything not
+positively identified as a mount point.
+
+### Consequences
+Windows workspaces containing junctions become fully reversible (after a
+reconciliation checkpoint upgrades their recorded fingerprints). Junction
+quarantine backups retain local quarantine forever (archive refuses), same
+as FIFOs. Unrecognized-tag descriptors now record the tag value. The
+`junction_is_unsupported_object` test is retired with its premise and
+replaced by the junction lifecycle suite; the POSIX socket test remains the
+cross-platform unsupported-refusal witness.

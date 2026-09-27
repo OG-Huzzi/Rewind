@@ -1,6 +1,10 @@
 # RewindUndo Project Context
 
-Status: Phase 1 implementation under verification
+Status: Phases 1–5 delivered and CI-verified (see CURRENT_STATE.md); the
+current phase gate is the Phase 5 platform-expansion contract with its
+object×platform capability matrix (`.ai/PHASE_5_PLATFORM_EXPANSION.md`),
+amended by slice 2 for Windows junctions
+(`.ai/PHASE_5_WINDOWS_JUNCTIONS.md`).
 
 ## Purpose
 

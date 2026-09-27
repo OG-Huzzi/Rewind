@@ -1,11 +1,14 @@
 # Current Implementation State
 
-Status: Rollback-performance phase (measurement-driven, ADR-018)
+Status: Phase 5 slice 2 — **Windows junctions as first-class objects —
+implemented** (contract `.ai/PHASE_5_WINDOWS_JUNCTIONS.md`, ADR-019;
+local Windows suite green; CI status recorded in TEST_STATUS.md). The
+rollback-performance phase (measurement-driven, ADR-018) remains
 **implemented and CI-verified** — per-step rollback verification observes
 only the affected path; 400-file undo ≈ 15.8 min → ≈ 1.25 min (debug) with
 identical safety anchors; contract at `.ai/PHASE_ROLLBACK_PERF.md`; CI
-run #43 on `6ec5e06` green on ubuntu/macOS/Windows. Phase 5 (platform
-expansion) first slice **implemented and
+run #43 on `6ec5e06` green on ubuntu/macOS/Windows. Phase 5
+slice 1 (POSIX named pipes) **implemented and
 CI-verified** — POSIX named pipes (FIFOs) as first-class objects; contract
 at `.ai/PHASE_5_PLATFORM_EXPANSION.md` including the object×platform
 capability matrix; final CI green on ubuntu/macOS/Windows (see
@@ -20,6 +23,29 @@ Phase 3 (continuous observation) complete and CI-verified
 (dependency-aware inspection) is implemented and CI-verified (run #23 on
 `4d89a2f`: ubuntu, macOS and windows all green) and documented in
 `.ai/PHASE_2_VERIFICATION_REPORT.md` (**Phase 2 VERIFIED**).
+
+## Phase 5 slice 2: Windows junctions (implemented)
+
+- Junctions (mount-point reparse points) are first-class **literal-leaf**
+  objects: `Fingerprint::Junction { substitute, print_name, target_hash,
+  metadata }` records the reparse data itself plus the entry's own readonly
+  attribute; the scanner never resolves or follows the target (contract
+  `.ai/PHASE_5_WINDOWS_JUNCTIONS.md`, ADR-019).
+- Restore recreates a plain directory, applies the recorded attributes while
+  the path is still plain (attribute APIs follow junctions), then writes the
+  recorded reparse data via `FSCTL_SET_REPARSE_POINT` (crate FFI site #4) and
+  reads it back byte-for-byte. External and dangling targets restore
+  literally — never followed, checked, or created.
+- Quarantined junctions are not archived (no content; the recorded
+  fingerprint is the recovery record) — the FIFO-consistent best-effort
+  posture, with a correctly named refusal replacing the previous
+  mislabeled "symlink with unreadable kind" error.
+- The capability matrix in `.ai/PHASE_5_PLATFORM_EXPANSION.md` §3 is
+  amended: Windows junction is **supported**; unrecognized reparse tags now
+  record the tag value in their refusal descriptor.
+- The pre-slice junction poisoning is gone: a workspace containing a
+  junction is fully reversible on Windows (previously the junction refused
+  undo); workspaces reconcile after upgrade to the stronger capability.
 
 ## Post-Phase-3 audit fixes (branch `fix/phase3-watcher-quoting`)
 

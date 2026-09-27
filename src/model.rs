@@ -74,6 +74,22 @@ pub enum Fingerprint {
     NamedPipe {
         metadata: MetadataFingerprint,
     },
+    /// A Windows NTFS junction (mount-point reparse point). Phase 5 second
+    /// slice: a junction is a literal directory leaf whose recorded state is
+    /// its reparse data — the substitute name (the NT path that governs
+    /// resolution) and the print name (the human-readable form) — plus the
+    /// entry's own attributes. The scanner produces this variant on Windows
+    /// only, and never follows the junction; restoring it on a platform that
+    /// cannot create junctions is refused with an explicit unsupported error.
+    /// Target existence is never checked: escaping and dangling targets are
+    /// recorded and restored literally, like POSIX symlinks pointing outside
+    /// the workspace.
+    Junction {
+        substitute: String,
+        print_name: String,
+        target_hash: String,
+        metadata: MetadataFingerprint,
+    },
     Unsupported {
         object_kind: String,
         descriptor: String,
@@ -88,6 +104,7 @@ impl Fingerprint {
             Self::Directory { .. } => "DIRECTORY",
             Self::Symlink { .. } => "SYMLINK",
             Self::NamedPipe { .. } => "NAMED_PIPE",
+            Self::Junction { .. } => "WINDOWS_JUNCTION",
             Self::Unsupported { .. } => "UNSUPPORTED",
         }
     }
@@ -100,6 +117,7 @@ impl Fingerprint {
                 | Self::Directory { .. }
                 | Self::Symlink { .. }
                 | Self::NamedPipe { .. }
+                | Self::Junction { .. }
         )
     }
 
@@ -153,6 +171,14 @@ impl Fingerprint {
             Self::NamedPipe { metadata } => {
                 format!("NAMED_PIPE(mode={:?})", metadata.mode)
             }
+            Self::Junction {
+                substitute,
+                print_name,
+                target_hash,
+                ..
+            } => format!(
+                "WINDOWS_JUNCTION(target_hash={target_hash},substitute={substitute},print={print_name})"
+            ),
             Self::Unsupported {
                 object_kind,
                 descriptor,

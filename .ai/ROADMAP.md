@@ -65,6 +65,11 @@ object×platform capability matrix in `.ai/PHASE_5_PLATFORM_EXPANSION.md`.
 Sockets, device nodes, junctions, xattrs/ACLs, and ownership remain
 unsupported or deferred as documented there.
 
+Amendment slice 2 delivered (2026-09): Windows junctions are first-class
+literal-leaf objects — recorded reparse data restored byte-faithfully and
+never followed — per `.ai/PHASE_5_WINDOWS_JUNCTIONS.md` (ADR-019); the
+capability matrix is amended there and in the slice-1 contract §3.
+
 Post-roadmap measurement-driven phase (2026-09): rollback step verification
 narrowed to the affected path (ADR-018) after profiling showed per-step full
 scans were 82-84% of undo time with quadratic scaling — 400-file undo

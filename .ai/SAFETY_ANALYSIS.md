@@ -207,3 +207,42 @@ with a fingerprint scan of exactly the affected path
 - **Nothing is assumed unchanged between steps.** Each step re-observes its
   path from the live filesystem; there is no caching, no watcher input, and
   no trust of stale evidence.
+
+## 14. Phase 5 slice 2 (Windows junctions as first-class objects)
+
+Junctions are recorded as a new `Fingerprint::Junction` literal leaf and
+restored from the recorded reparse data (ADR-019). Safety analysis:
+
+- **A junction is never followed.** The scanner classifies from the reparse
+  tag and buffer alone; restoration writes the recorded names back without
+  resolving, checking, or creating the target; `ensure_parent_confinement`
+  still refuses a junction anywhere in a parent chain. External and
+  dangling targets are recorded and restored literally — the same
+  literal-leaf semantics POSIX symlinks pointing outside the workspace
+  already have.
+- **Attribute mutation never escapes the workspace.** The recorded readonly
+  flag is applied to the freshly created *plain* directory before the
+  reparse data exists, precisely because attribute APIs (`set_permissions`,
+  `attrib`) follow junctions — the probe showed `attrib +R` on a junction
+  marks the *target*. Restoration never calls an attribute API on a live
+  junction.
+- **Restoration is verified, not assumed.** The installed reparse data is
+  read back and compared to the record, and the step's post-apply
+  path-scoped re-scan compares the complete fingerprint (names and
+  attributes); `compatible_after` requires exact equality.
+- **Quarantine and archival remain conservative.** Quarantine is the same
+  rename (probe-verified to move the reparse point, never the target
+  subtree). Archival of junction backups is refused with a named reason
+  (no content; the recorded fingerprint is the recovery record) and the
+  local quarantine is retained — identical posture to FIFOs. Before this
+  slice, `copy_artifact` would have mislabeled such a refusal as a "symlink
+  with unreadable kind"; the explicit junction check prevents that.
+- **Refusals stay refusals.** Malformed or non-Unicode reparse data records
+  `UNSUPPORTED` with a named reason instead of a guessed junction;
+  unrecognized reparse tags now name the tag value. Off Windows, a
+  `Junction` fingerprint cannot be produced and its restoration is refused
+  explicitly (mirroring the FIFO refusal on Windows).
+- **Nothing is assumed about the target between capture and restore.** The
+  recorded names are the state; if the live junction was retargeted after
+  capture, the pre-step conflict check refuses exactly as for any other
+  object (asserted by test).

@@ -644,6 +644,52 @@ fn apply_step(
                 crate::paths::verify_mutation_confined(&workspace.root, &target_path, true)?;
             }
         }
+        Fingerprint::Junction {
+            substitute,
+            print_name,
+            metadata: recorded_metadata,
+            ..
+        } => {
+            // A junction is a content-free directory entry whose entire
+            // state is its reparse data plus its own attributes (Phase 5
+            // slice 2). Restoration recreates a plain directory, applies the
+            // recorded attributes while the path is still plain (attribute
+            // APIs would follow a junction), then writes the recorded
+            // reparse data and reads it back. The target is never resolved,
+            // checked for existence, or created. A platform that cannot
+            // create junctions refuses before touching anything.
+            #[cfg(not(windows))]
+            {
+                let _ = (substitute, print_name, recorded_metadata);
+                return Err(RewindError::Unsupported(format!(
+                    "junctions cannot be restored on this platform: {path}"
+                )));
+            }
+            #[cfg(windows)]
+            {
+                ensure_parent_directories(&workspace.root, &target_path)?;
+                create_junction(&target_path, substitute, print_name, recorded_metadata)?;
+                // Post-install verification mirrors the symlink arm: a
+                // junction IS a reparse point, so the generic
+                // mutation-confinement leaf check cannot apply; instead the
+                // installed reparse data is read back and must equal the
+                // record. The final path-scoped re-scan then compares the
+                // complete fingerprint (names and attributes).
+                let installed =
+                    crate::scan::reparse_junction_names(&target_path).ok_or_else(|| {
+                        RewindError::PathEscape(format!(
+                            "installed junction reparse data unreadable at {}",
+                            target_path.display()
+                        ))
+                    })?;
+                if (&installed.0, &installed.1) != (substitute, print_name) {
+                    return Err(RewindError::PathEscape(format!(
+                        "installed junction reparse data diverged at {}",
+                        target_path.display()
+                    )));
+                }
+            }
+        }
         Fingerprint::Unsupported { .. } => {
             return Err(RewindError::Unsupported(format!(
                 "cannot install unsupported object at {path}"
@@ -707,6 +753,9 @@ fn desired_artifact_is_ready(step: &JournalStep, desired: &Fingerprint) -> bool 
         Fingerprint::Directory { .. } | Fingerprint::Symlink { .. } => true,
         // A FIFO has no staged content: existence is the whole state.
         Fingerprint::NamedPipe { .. } => true,
+        // A junction has no staged content either: the recorded reparse
+        // data is the whole state.
+        Fingerprint::Junction { .. } => true,
         Fingerprint::Absent | Fingerprint::Unsupported { .. } => false,
     }
 }
@@ -759,6 +808,30 @@ fn artifact_matches_fingerprint(path: &Path, expected: &Fingerprint) -> bool {
             #[cfg(not(unix))]
             {
                 let _ = expected_metadata;
+                false
+            }
+        }
+        Fingerprint::Junction {
+            substitute,
+            print_name,
+            metadata: expected_metadata,
+            ..
+        } => {
+            // The quarantined object must still be a junction whose reparse
+            // data and recorded attributes match the record; verifying
+            // never resolves the target.
+            #[cfg(windows)]
+            {
+                metadata.file_type().is_symlink()
+                    && crate::scan::reparse_junction_names(path)
+                        == Some((substitute.clone(), print_name.clone()))
+                    && metadata.permissions().readonly() == expected_metadata.readonly
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = (substitute, print_name, expected_metadata);
+                // A junction cannot exist off-Windows; a foreign journal
+                // naming one is not matchable against this filesystem.
                 false
             }
         }
@@ -893,6 +966,185 @@ fn create_symlink(
         }
     }
     Ok(())
+}
+
+/// Creates a junction from the recorded reparse data (Phase 5 slice 2).
+/// The substitute and print names are applied literally — never resolved,
+/// never followed, never validated against the target's existence (a
+/// dangling junction restores exactly like a live one). Attributes are
+/// applied while the path is still a plain directory, because attribute
+/// APIs follow junctions; the reparse data is then written and the entry
+/// becomes the junction the record specifies.
+#[cfg(windows)]
+fn create_junction(
+    destination: &Path,
+    substitute: &str,
+    print_name: &str,
+    metadata: &crate::model::MetadataFingerprint,
+) -> Result<()> {
+    // Idempotent replay (recovery re-applies a step, and the crash window
+    // between journal writes makes re-application legitimate): a destination
+    // that is already exactly the recorded junction is done. Anything else
+    // is an error — the quarantine moved the prior object away, and the
+    // per-step pre-check would have short-circuited a matching state.
+    if let Ok(existing) = fs::symlink_metadata(destination) {
+        if existing.file_type().is_symlink()
+            && crate::scan::reparse_junction_names(destination)
+                == Some((substitute.to_owned(), print_name.to_owned()))
+            && existing.permissions().readonly() == metadata.readonly
+        {
+            return Ok(());
+        }
+        return Err(RewindError::Storage(format!(
+            "refusing to replace existing object at {} while restoring a junction",
+            destination.display()
+        )));
+    }
+    fs::create_dir(destination)?;
+    // The recorded readonly flag is applied to the plain directory BEFORE
+    // the reparse data exists: afterwards the path is a junction and
+    // attribute APIs would follow it to the target. A fresh directory is
+    // never readonly, so there is nothing to clear.
+    if metadata.readonly {
+        let mut permissions = fs::symlink_metadata(destination)?.permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(destination, permissions)?;
+    }
+    junction_ffi::set_reparse_point(destination, substitute, print_name)?;
+    Ok(())
+}
+
+/// The junction-creation FFI — the crate's fourth minimal FFI site, alongside
+/// `reparse_tag` (`src/scan.rs`), `CreateProcessW`
+/// (`src/watch/detach_windows.rs`), and `mkfifo(2)` (`src/rollback.rs`).
+///
+/// `FSCTL_SET_REPARSE_POINT` is CTL_CODE(0x0009, 0x029, METHOD_BUFFERED,
+/// FILE_ANY_ACCESS) = 0x000900A4. The handle is opened GENERIC_WRITE with
+/// FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS on the plain
+/// directory; junction (mount-point) creation requires no privilege,
+/// unlike symlinks. The buffer layout is probe-verified against a real
+/// `mklink /J` junction: 8-byte header, four u16 offset/length fields
+/// (offsets relative to PathBuffer, lengths excluding the NUL
+/// terminators), then substitute UTF-16 + NUL + print UTF-16 + NUL;
+/// ReparseDataLength covers everything after the header.
+#[cfg(windows)]
+mod junction_ffi {
+    use std::ffi::c_void;
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+
+    use crate::error::{Result, RewindError};
+
+    const IO_REPARSE_TAG_MOUNT_POINT: u32 = 0xA000_0003;
+    const FSCTL_SET_REPARSE_POINT: u32 = 0x0009_00A4;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const GENERIC_WRITE: u32 = 0x4000_0000;
+    const OPEN_EXISTING: u32 = 0x0000_0003;
+    const INVALID_HANDLE_VALUE: *mut c_void = usize::MAX as *mut c_void;
+    // Bounded far below the 16 KiB reparse-buffer maximum so every u16
+    // offset and length below is exact.
+    const MAX_NAME_UNITS: usize = 4000;
+
+    extern "system" {
+        fn CreateFileW(
+            filename: *const u16,
+            desired_access: u32,
+            share_mode: u32,
+            security_attributes: *mut c_void,
+            creation_disposition: u32,
+            flags_and_attributes: u32,
+            template_file: *mut c_void,
+        ) -> *mut c_void;
+        fn DeviceIoControl(
+            device: *mut c_void,
+            control_code: u32,
+            in_buffer: *mut c_void,
+            in_size: u32,
+            out_buffer: *mut c_void,
+            out_size: u32,
+            bytes_returned: *mut u32,
+            overlapped: *mut c_void,
+        ) -> i32;
+        fn CloseHandle(handle: *mut c_void) -> i32;
+    }
+
+    pub(super) fn set_reparse_point(path: &Path, substitute: &str, print_name: &str) -> Result<()> {
+        let substitute_units: Vec<u16> = substitute.encode_utf16().collect();
+        let print_units: Vec<u16> = print_name.encode_utf16().collect();
+        if substitute_units.len() > MAX_NAME_UNITS || print_units.len() > MAX_NAME_UNITS {
+            return Err(RewindError::Unsupported(format!(
+                "junction reparse data exceeds the reparse buffer: {}",
+                path.display()
+            )));
+        }
+        let substitute_length = 2 * substitute_units.len();
+        let print_length = 2 * print_units.len();
+        let data_length = 8 + substitute_length + 2 + print_length + 2;
+        let mut buffer = Vec::with_capacity(8 + data_length);
+        buffer.extend_from_slice(&IO_REPARSE_TAG_MOUNT_POINT.to_le_bytes());
+        buffer.extend_from_slice(&(data_length as u16).to_le_bytes());
+        buffer.extend_from_slice(&0u16.to_le_bytes()); // Reserved
+        buffer.extend_from_slice(&0u16.to_le_bytes()); // SubstituteNameOffset
+        buffer.extend_from_slice(&(substitute_length as u16).to_le_bytes());
+        // The print name follows the substitute name's NUL terminator.
+        buffer.extend_from_slice(&((substitute_length + 2) as u16).to_le_bytes());
+        buffer.extend_from_slice(&(print_length as u16).to_le_bytes());
+        for unit in substitute_units.iter().copied().chain(std::iter::once(0)) {
+            buffer.extend_from_slice(&unit.to_le_bytes());
+        }
+        for unit in print_units.iter().copied().chain(std::iter::once(0)) {
+            buffer.extend_from_slice(&unit.to_le_bytes());
+        }
+
+        let wide: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        // SAFETY: `wide` and `buffer` are owned for the duration of the
+        // call; the handle is closed on every return path; the operation
+        // writes the reparse data of the object named by `wide` and nothing
+        // else. The query is the only system state read.
+        unsafe {
+            let handle = CreateFileW(
+                wide.as_ptr(),
+                GENERIC_WRITE,
+                0,
+                std::ptr::null_mut(),
+                OPEN_EXISTING,
+                FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+                std::ptr::null_mut(),
+            );
+            if handle == INVALID_HANDLE_VALUE {
+                return Err(RewindError::Storage(format!(
+                    "open junction target {}: {}",
+                    path.display(),
+                    std::io::Error::last_os_error()
+                )));
+            }
+            let ok = DeviceIoControl(
+                handle,
+                FSCTL_SET_REPARSE_POINT,
+                buffer.as_ptr().cast::<c_void>() as *mut c_void,
+                buffer.len() as u32,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            );
+            let error = std::io::Error::last_os_error();
+            CloseHandle(handle);
+            if ok == 0 {
+                return Err(RewindError::Storage(format!(
+                    "set junction reparse point {}: {}",
+                    path.display(),
+                    error
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 fn sync_target(path: &Path) -> Result<()> {
@@ -1352,6 +1604,24 @@ fn copy_artifact(source: &Path, destination: &Path) -> Result<()> {
     let metadata = fs::symlink_metadata(source)?;
     if let Some(parent) = destination.parent() {
         fs::create_dir_all(parent)?;
+    }
+    // A junction is a name-surrogate reparse point: std reports it as a
+    // symlink, but recreating it as a symlink would fabricate a different
+    // object class, and a junction carries no content to archive — the
+    // journal's recorded fingerprint is the recovery record. Archival is
+    // refused with a named reason and the local quarantine remains,
+    // exactly as for FIFOs (Phase 5 slice 2). The check runs at every
+    // recursion depth.
+    #[cfg(windows)]
+    {
+        if metadata.file_type().is_symlink()
+            && crate::scan::reparse_junction_names(source).is_some()
+        {
+            return Err(RewindError::Unsupported(format!(
+                "junction quarantine objects are not archived; the recorded fingerprint is the recovery record: {}",
+                source.display()
+            )));
+        }
     }
     if metadata.file_type().is_symlink() {
         let target = fs::read_link(source)?;

@@ -1,7 +1,71 @@
 # Phase 1 Test Status
 
-Status after the rollback-performance phase. Newer records are at the top;
-the Phase 5, Phase 4, Phase 3, and Phase 1.3 records are preserved below.
+Status after Phase 5 slice 2 (Windows junctions). Newer records are at the
+top; earlier phase records are preserved below.
+
+## Phase 5 slice 2 (Windows junctions as first-class objects)
+
+Contract: `.ai/PHASE_5_WINDOWS_JUNCTIONS.md`; decision: ADR-019. The
+junction mechanics were probe-verified against real `mklink /J` junctions
+before implementation (buffer layout, `FSCTL_SET_REPARSE_POINT` =
+0x000900A4, byte-identical round trip, quarantine rename, dangling-target
+restore, `attrib +R` following the junction) — the probe example was a
+scratch tool and is not part of the tree.
+
+Local suite on Windows (x86_64-pc-windows-gnu, Rust 1.98.1, debug):
+fmt, `cargo check --all-targets`, clippy `--all-targets -- -D warnings`,
+`cargo test --doc`, and the full suite **157 passed / 0 failed**
+(`cargo test --all-targets`): 61 lib, 10 boundary_correlation, 13
+foundation, 8 hardening, 15 phase2_dependency, 17 phase3_watcher, 7
+phase4_timeline, **7 phase5_platform** (2 model-level on all platforms + 5
+Windows junction lifecycle tests), 3 rollback_path_scan (junction cases
+added to the fingerprint-equivalence test), 8 rollback_tree (the retired
+junction-is-unsupported test replaced by the phase5 suite, per the amended
+contract AC7), 8 shell_integration.
+
+New junction tests (all driving the real capture/undo/redo machinery on
+Windows):
+
+- `junction_fingerprint_is_backward_compatible` (all platforms): kind name,
+  restore support, serde round trip, legacy manifests without the variant.
+- `junctions::a_junction_scans_as_a_supported_junction`: classification with
+  the reparse data as the record, no traversal into the junction, target
+  untouched.
+- `junctions::junction_creation_is_captured_and_reversible`: capture → undo
+  removes → redo recreates with byte-identical reparse data.
+- `junctions::replacing_a_junction_with_a_directory_is_reversible`: both
+  directions through the quarantine machinery; the target subtree is never
+  touched by the quarantine rename.
+- `junctions::an_external_junction_target_is_restored_without_being_followed`:
+  outside-root and nonexistent targets recorded and restored literally; the
+  missing target is never created; the external target's content is never
+  touched.
+- `junctions::external_divergence_of_a_junction_refuses_undo`: a post-capture
+  retarget refuses undo with no mutation.
+- `rollback_path_scan`: junction fingerprints identical between the
+  path-scoped and full scans (live + dangling), and neither scan traverses a
+  junction.
+
+Deliberate-failure check: the external-divergence test initially failed for
+a test-side reason (`mklink /J` refuses to create over the captured
+command's plain directory) — fixed by removing the directory in the external
+writer's own command; the refusal behavior itself was correct on the first
+run.
+
+Known gaps (disclosed in the contract §7, not claimed): an unrecognized-tag
+reparse point cannot be manufactured with built-in tooling (branch not
+end-to-end testable; unsupported-refusal machinery remains witnessed by the
+POSIX unix-socket test); a readonly junction entry cannot be produced with
+built-in tooling (`attrib +R` follows the junction), so the readonly-restore
+branch is implemented and probe-verified at the mechanism level only, with
+the default-attribute path covered end-to-end by every lifecycle test.
+POSIX cannot produce the variant; ubuntu/macOS CI runs the two model-level
+tests plus the unchanged suites (the junction restore refusal path off
+Windows is compile-gated the same way the FIFO path is).
+
+The 152-test record below describes `7de39b4` before this slice.
+
+---
 
 ## Rollback performance phase (path-scoped step verification)
 

@@ -687,21 +687,23 @@ pub struct WorkspaceStatus {
     pub open_unknown: bool,
 }
 
-pub fn state_summary(manifest: &Manifest) -> (usize, usize, usize, usize) {
+pub fn state_summary(manifest: &Manifest) -> (usize, usize, usize, usize, usize) {
     let mut files = 0;
     let mut directories = 0;
     let mut named_pipes = 0;
+    let mut junctions = 0;
     let mut unsupported = 0;
     for fingerprint in manifest.entries.values() {
         match fingerprint {
             Fingerprint::RegularFile { .. } | Fingerprint::Symlink { .. } => files += 1,
             Fingerprint::Directory { .. } => directories += 1,
             Fingerprint::NamedPipe { .. } => named_pipes += 1,
+            Fingerprint::Junction { .. } => junctions += 1,
             Fingerprint::Unsupported { .. } => unsupported += 1,
             Fingerprint::Absent => {}
         }
     }
-    (files, directories, named_pipes, unsupported)
+    (files, directories, named_pipes, junctions, unsupported)
 }
 
 fn _journal_status_is_used(status: JournalStatus) -> bool {

@@ -160,10 +160,24 @@ fn visit_directory(
 }
 
 /// Per Phase 0.7 §8.4, only a reparse object *positively identified* as a
-/// symbolic link may be treated as SYMLINK. Junctions and any reparse point
-/// whose tag cannot be read must be classified as UNSUPPORTED and must never
-/// be traversed or replaced. Returns `Some(fingerprint)` when the object must
-/// be recorded as unsupported.
+/// symbolic link may be treated as SYMLINK, and (Phase 5 slice 2) only a
+/// mount point whose reparse data is completely readable may be treated as
+/// JUNCTION; every other reparse point is recorded as UNSUPPORTED and is
+/// never traversed or replaced.
+#[derive(Debug)]
+enum ReparseClassification {
+    /// Not a reparse point, or a positively identified symlink: continue
+    /// with the normal file/directory/symlink classification.
+    Continue,
+    /// A junction whose substitute and print names were read completely.
+    Junction {
+        substitute: String,
+        print_name: String,
+    },
+    /// The object must be recorded as unsupported; the reason is final.
+    Refuse(Fingerprint),
+}
+
 /// Public wrapper for archive/copy code that needs the authoritative
 /// file-vs-directory flavor of a positively identified Windows symlink.
 #[cfg(windows)]
@@ -177,45 +191,67 @@ pub fn reparse_symlink_kind(_path: &Path) -> Option<crate::model::SymlinkTargetK
     None
 }
 
+/// Reads a junction's substitute and print names from its reparse data —
+/// the authoritative junction state. Used by rollback's post-install
+/// verification, quarantine-backup verification, and tests. The names are
+/// never resolved: this is a read of the reparse bytes, nothing more.
 #[cfg(windows)]
-fn reparse_unsupported_fingerprint(
+pub fn reparse_junction_names(path: &Path) -> Option<(String, String)> {
+    reparse_tag::junction_names(path)
+}
+
+#[cfg(windows)]
+fn classify_reparse(
     metadata: &fs::Metadata,
     file_type: &std::fs::FileType,
     path: &Path,
-) -> Option<Fingerprint> {
+) -> ReparseClassification {
     use std::os::windows::fs::MetadataExt;
 
     const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
     if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0 {
-        return None;
+        return ReparseClassification::Continue;
     }
     if !file_type.is_symlink() {
-        return Some(Fingerprint::Unsupported {
+        return ReparseClassification::Refuse(Fingerprint::Unsupported {
             object_kind: "WINDOWS_REPARSE_POINT".to_owned(),
             descriptor: "unclassified reparse point; traversal refused".to_owned(),
         });
     }
     match reparse_tag::read_tag(path) {
-        Some(reparse_tag::IO_REPARSE_TAG_SYMLINK) => None,
-        Some(reparse_tag::IO_REPARSE_TAG_MOUNT_POINT) => Some(Fingerprint::Unsupported {
-            object_kind: "WINDOWS_JUNCTION".to_owned(),
-            descriptor: "NTFS junction reparse point; traversal and replacement refused".to_owned(),
-        }),
-        _ => Some(Fingerprint::Unsupported {
+        Some(reparse_tag::IO_REPARSE_TAG_SYMLINK) => ReparseClassification::Continue,
+        Some(reparse_tag::IO_REPARSE_TAG_MOUNT_POINT) => match reparse_tag::junction_names(path) {
+            Some((substitute, print_name)) => ReparseClassification::Junction {
+                substitute,
+                print_name,
+            },
+            None => ReparseClassification::Refuse(Fingerprint::Unsupported {
+                object_kind: "WINDOWS_JUNCTION".to_owned(),
+                descriptor:
+                    "junction reparse data unreadable or invalid; traversal and replacement refused"
+                        .to_owned(),
+            }),
+        },
+        Some(tag) => ReparseClassification::Refuse(Fingerprint::Unsupported {
             object_kind: "WINDOWS_REPARSE_POINT".to_owned(),
-            descriptor: "reparse point tag unreadable or unrecognized; traversal refused"
-                .to_owned(),
+            descriptor: format!(
+                "reparse point tag {tag:#010x} is not supported; traversal refused"
+            ),
+        }),
+        None => ReparseClassification::Refuse(Fingerprint::Unsupported {
+            object_kind: "WINDOWS_REPARSE_POINT".to_owned(),
+            descriptor: "reparse point tag unreadable; traversal refused".to_owned(),
         }),
     }
 }
 
 #[cfg(not(windows))]
-fn reparse_unsupported_fingerprint(
+fn classify_reparse(
     _metadata: &fs::Metadata,
     _file_type: &std::fs::FileType,
     _path: &Path,
-) -> Option<Fingerprint> {
-    None
+) -> ReparseClassification {
+    ReparseClassification::Continue
 }
 
 /// The reparse tag is not exposed by stable standard-library APIs, so this
@@ -294,6 +330,45 @@ mod reparse_tag {
         })
     }
 
+    /// For a positively identified mount point (junction), returns its
+    /// substitute and print names parsed from the reparse data. `None` when
+    /// the buffer is unreadable, malformed, or the names are not valid
+    /// Unicode — the caller records the junction as unsupported rather than
+    /// guessing. These names are the exact recorded state: restoration
+    /// writes them back byte-for-byte (Phase 5 slice 2).
+    pub fn junction_names(path: &Path) -> Option<(String, String)> {
+        let (tag, buffer) = read_reparse_buffer(path)?;
+        if tag != IO_REPARSE_TAG_MOUNT_POINT || buffer.len() < 16 {
+            return None;
+        }
+        // Mount-point buffer: 8-byte header, then four u16 offset/length
+        // fields (offsets relative to PathBuffer, which starts at byte 16),
+        // then the UTF-16 names, each NUL-terminated in the buffer with the
+        // terminator excluded from the lengths.
+        let substitute_offset = u16::from_le_bytes([buffer[8], buffer[9]]) as usize;
+        let substitute_length = u16::from_le_bytes([buffer[10], buffer[11]]) as usize;
+        let print_offset = u16::from_le_bytes([buffer[12], buffer[13]]) as usize;
+        let print_length = u16::from_le_bytes([buffer[14], buffer[15]]) as usize;
+        let substitute = utf16_slice(&buffer, 16 + substitute_offset, substitute_length)?;
+        let print_name = utf16_slice(&buffer, 16 + print_offset, print_length)?;
+        Some((substitute, print_name))
+    }
+
+    /// Extracts a length-prefixed-bytes UTF-16 string at `start` in the
+    /// reparse buffer. `None` on malformed bounds or non-Unicode data; the
+    /// caller refuses rather than guessing.
+    fn utf16_slice(buffer: &[u8], start: usize, length: usize) -> Option<String> {
+        if !length.is_multiple_of(2) || start.checked_add(length)? > buffer.len() {
+            return None;
+        }
+        let units: Vec<u16> = (0..length / 2)
+            .map(|index| {
+                u16::from_le_bytes([buffer[start + index * 2], buffer[start + index * 2 + 1]])
+            })
+            .collect();
+        String::from_utf16(&units).ok()
+    }
+
     fn read_reparse_buffer(path: &Path) -> Option<(u32, Vec<u8>)> {
         let wide: Vec<u16> = path
             .as_os_str()
@@ -354,10 +429,30 @@ fn classify_entry(
     seen_case: &mut BTreeMap<String, String>,
     options: ScanOptions,
 ) -> Result<Fingerprint> {
-    let reparse_unsupported = reparse_unsupported_fingerprint(metadata, file_type, path);
-    if let Some(unsupported_fingerprint) = reparse_unsupported {
-        unsupported.push(relative.clone());
-        return Ok(unsupported_fingerprint);
+    match classify_reparse(metadata, file_type, path) {
+        ReparseClassification::Refuse(unsupported_fingerprint) => {
+            unsupported.push(relative.clone());
+            return Ok(unsupported_fingerprint);
+        }
+        ReparseClassification::Junction {
+            substitute,
+            print_name,
+        } => {
+            // A junction is a literal leaf: its state is the reparse data
+            // plus its own entry attributes. The scanner never resolves or
+            // follows the target; the names below are the exact bytes
+            // restoration writes back.
+            let target_hash = blake3::hash(format!("{substitute}\0{print_name}").as_bytes())
+                .to_hex()
+                .to_string();
+            return Ok(Fingerprint::Junction {
+                substitute,
+                print_name,
+                target_hash,
+                metadata: metadata_fingerprint(metadata),
+            });
+        }
+        ReparseClassification::Continue => {}
     }
     if file_type.is_dir() {
         return visit_directory(

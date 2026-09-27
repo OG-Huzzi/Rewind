@@ -1,5 +1,18 @@
 # Phase 3 Implementation Handoff
 
+**Phase 5 slice 2 junction invariants (do not regress):** a junction
+(`Fingerprint::Junction`) is a literal leaf whose state is its reparse data
+(substitute + print names) plus its own readonly attribute. Never resolve,
+  follow, create, or check the existence of a junction target; restore
+  writes the recorded names back via `FSCTL_SET_REPARSE_POINT` (crate FFI
+  site #4, `src/rollback.rs`) after applying attributes to the still-plain
+  directory, and reads the reparse data back byte-for-byte. A junction in
+  any parent chain still refuses the mutation (confinement), quarantined
+  junctions are never archived (the fingerprint is the recovery record),
+  and `copy_artifact` must keep refusing them *before* the symlink branch
+  (std reports junctions as symlinks). Do not widen the capability matrix
+  without a contract amendment.
+
 Status: Phase 3 (continuous observation) complete and CI-verified
 (run #36111890265 on `d69fdca`: ubuntu, macOS and windows all green; final
 verdict in `.ai/PHASE_3_VERIFICATION_REPORT.md`). **Phase 3 is VERIFIED.**
