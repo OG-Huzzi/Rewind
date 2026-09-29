@@ -179,13 +179,20 @@ fn path_scoped_fingerprints_match_the_full_scan() {
             ),
         }
         // DACL-carrying files classify identically too, with the full
-        // explicit ACE record (Phase 5 slice 4, AC6).
+        // explicit ACE record (Phase 5 slice 4, AC6). Only the Everyone
+        // grant is asserted by SID: the rest of the explicit set is
+        // environment-dependent (runner icacls converts inherited ACEs to
+        // explicit copies).
         match manifest.get("granted.txt") {
             Fingerprint::RegularFile { dacl, .. } => {
                 let dacl = dacl.expect("granted.txt must record its DACL");
                 assert!(!dacl.protected);
-                assert_eq!(dacl.aces.len(), 1);
-                assert_eq!(dacl.aces[0].sid, "S-1-1-0");
+                assert!(
+                    dacl.aces
+                        .iter()
+                        .any(|ace| ace.sid == "S-1-1-0" && ace.ace_type == 0),
+                    "the Everyone grant must be recorded: {dacl:?}"
+                );
             }
             other => panic!(
                 "granted.txt must be a regular file, got {}",
