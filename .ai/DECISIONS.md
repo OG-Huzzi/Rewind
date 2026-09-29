@@ -468,3 +468,41 @@ as FIFOs. Unrecognized-tag descriptors now record the tag value. The
 `junction_is_unsupported_object` test is retired with its premise and
 replaced by the junction lifecycle suite; the POSIX socket test remains the
 cross-platform unsupported-refusal witness.
+
+## ADR-020: Named NTFS streams are part of the regular-file fingerprint
+
+### Context
+Regular files could carry hidden named `$DATA` streams (alternate data
+streams) on NTFS. State identity recorded only the default stream, so
+undo/redo silently dropped stream content when restoring a file from its
+default stream alone — a fidelity hole invisible to state identity. Extended
+attributes, ACLs, and ownership remain deferred (platform-divergent or
+privilege-bound); POSIX xattrs are additionally blocked for now by having no
+POSIX host to probe against before implementing (the slice-1 FIFO CI hang is
+the recorded cost of implementing blind).
+
+### Decision
+Record named `$DATA` streams on regular files (Windows only) as a
+`streams: BTreeMap<stream name, CAS hash>` component of
+`Fingerprint::RegularFile`, skipped from serialization when empty so
+existing workspaces' fingerprints stay byte-identical (no schema bump, no
+drift). Stream content is CAS-ingested exactly like file content.
+Restoration writes streams from verified CAS bytes, but only after the leaf
+is verified a real regular file — a probe showed a stream write on a
+junction path follows the reparse point into the target. Quarantine renames
+carry streams; archives copy and verify them. Contract:
+`.ai/PHASE_5_ALTERNATE_DATA_STREAMS.md`.
+
+### Alternatives
+Record a stream-set hash only (restoration impossible without values — a
+fidelity lie). Refuse stream-carrying files as unsupported (re-poisons
+ordinary Windows workspaces; the slice exists precisely because silent loss
+is worse). Archive refusal like FIFOs (unnecessary: `fs::copy` carries
+streams, probe-verified). POSIX xattrs first (no local probe host).
+
+### Consequences
+State identity for stream-carrying files becomes strictly stronger after the
+first rescan; directory-attached streams remain documented non-state (like
+timestamps); enumeration failures degrade honestly; non-`$DATA` stream types
+refuse as scan errors; POSIX restore of a foreign stream-carrying
+fingerprint is an explicit unsupported error.
