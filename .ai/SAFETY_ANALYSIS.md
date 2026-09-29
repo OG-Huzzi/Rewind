@@ -246,3 +246,58 @@ restored from the recorded reparse data (ADR-019). Safety analysis:
   recorded names are the state; if the live junction was retargeted after
   capture, the pre-step conflict check refuses exactly as for any other
   object (asserted by test).
+
+## 15. Phase 5 slice 3 (Windows alternate data streams)
+
+Named `$DATA` streams on regular files became part of state identity
+(ADR-020, contract `.ai/PHASE_5_ALTERNATE_DATA_STREAMS.md`). Safety
+analysis:
+
+- **The hole this closes was silent loss.** A stream-carrying file was
+  recorded as a plain regular file; undo restored it from the default
+  stream alone and its hidden named content vanished without any
+  fingerprint noticing. Streams are now CAS content captured, compared,
+  restored, verified, quarantined, and archived like the default stream.
+- **No schema drift, no silent upgrade.** The stream map is skipped from
+  serialization when empty: stream-free fingerprints serialize
+  byte-identically to the pre-slice form, so existing state ids are
+  unchanged; a stream-carrying file gains strictly stronger identity,
+  resolved by the existing reconciliation checkpoint (the same upgrade
+  argument as the FIFO and junction slices).
+- **No traversal through stream writes.** Streams are enumerated only for
+  leaves `symlink_metadata` already classified as regular files, and a
+  stream is written only after `verify_mutation_confined(leaf_exists =
+  true)` has confirmed the installed leaf is a real regular file — the
+  probe showed a stream write on a junction path follows the reparse point
+  into the target directory, so that check strictly precedes any stream
+  write. Enumeration itself never resolves a reparse point.
+- **No guessed state.** A failed stream enumeration is `ScanIncomplete`
+  (honest degradation); an enumerated entry that is not `::$DATA` or
+  `:name:$DATA` is a named scan error; a truncated enumeration would be
+  silent state loss, so any `FindNextStreamW` error other than the
+  documented end markers is an error, not a stop. Off Windows a recorded
+  non-empty stream set refuses restoration and never matches a quarantined
+  artifact — a foreign fingerprint is never approximated.
+- **Restore ordering is probe-derived.** Streams are written from verified
+  CAS blobs (verify before the stream file exists; bounded-chunk copy,
+  never a whole-blob memory load) after the leaf verification and before
+  the readonly attribute (a stream write on a readonly file is denied).
+  The step's path-scoped re-scan compares the complete fingerprint, so a
+  partial or wrong stream write fails the step into the existing
+  `RecoveryRequired` machinery — never a reported success with lost
+  streams. A crash mid-step classifies exactly as a half-installed regular
+  file today, with the quarantined original (streams intact) as the
+  recovery record.
+- **Quarantine and archive stay faithful.** The quarantine rename carries
+  every stream (probe-verified); `fs::copy` carries streams, and
+  `verify_archive_pair` compares stream name sets and per-stream BLAKE3
+  content between quarantined source and archived copy before
+  `ArchiveStatus::Archived` is set — a shallow copy can never authorize
+  disposal of the last surviving stream content.
+  `artifact_matches_fingerprint` (recovery classification) applies the
+  same comparison to quarantined backups.
+- **Known non-state, stated not hidden.** Directory-attached streams
+  (enumerable on NTFS) remain documented non-state like timestamps;
+  streams on symlinks/junctions are unreachable by construction (reparse
+  leaves are never enumerated). The residual TOCTOU window is the
+  documented Phase 0.7 conditional guarantee, unchanged.

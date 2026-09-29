@@ -1,5 +1,23 @@
 # Phase 3 Implementation Handoff
 
+**Phase 5 slice 3 stream invariants (do not regress):** named NTFS streams
+are part of the regular-file fingerprint (`streams` map, skipped when
+empty — stream-free fingerprints must stay byte-identical; do not add
+fields without `skip_serializing_if`). Streams are enumerated only on
+leaves `symlink_metadata` already classified as regular files; never
+enumerate or write streams on a reparse point (a stream write on a
+junction path follows it out of the workspace — probe-verified). Stream
+writes are direct `File::create` on the `path:name:$DATA` spec — no
+temp+rename staging (a stream-spec temp path is itself a stream spec) —
+after `verify_mutation_confined(leaf_exists = true)` and before the
+readonly attribute is applied. Stream content is verified
+(`Cas::verify`) before the stream file is created and copied in bounded
+chunks; never load a stream blob whole into memory. Enumeration failure is
+a `ScanIncomplete` degradation and a non-`$DATA` entry is a named scan
+error — never an empty guess or a silent truncation. Off Windows, a
+recorded non-empty stream set refuses restoration and never matches a
+quarantined artifact.
+
 **Phase 5 slice 2 junction invariants (do not regress):** a junction
 (`Fingerprint::Junction`) is a literal leaf whose state is its reparse data
 (substitute + print names) plus its own readonly attribute. Never resolve,
@@ -28,11 +46,14 @@ not remove the entry/final full scans — the final full-scan state comparison
 is the only global deviation check. Journal durability writes are
 intentionally untouched.
 
-**The crate has three documented minimal FFI sites:** `reparse_tag`
-(`src/scan.rs`), `CreateProcessW` (`src/watch/detach_windows.rs`), and
+**The crate has five documented minimal FFI sites:** `reparse_tag`
+(`src/scan.rs`), `CreateProcessW` (`src/watch/detach_windows.rs`),
 `mkfifo(2)` (`src/rollback.rs` — `std::os::unix::fs::mkfifo` is unstable,
 rust-lang/rust#139324; the FFI declares `mode_t` per platform ABI:
-`c_ushort` on macOS, `c_uint` on Linux).
+`c_ushort` on macOS, `c_uint` on Linux), `FSCTL_SET_REPARSE_POINT`
+(`src/rollback.rs`, junction slice), and `FindFirstStreamW`/
+`FindNextStreamW` (`src/scan.rs::stream_ffi`, ADS slice — read-only
+enumeration; stream writes go through ordinary std file APIs).
 
 The Phase 3 audit fixes were merged into `main` via PR #1 (merge commit
 `c4aeef7`; branch deleted). Phase 4's first slice — the read-only

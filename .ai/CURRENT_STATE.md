@@ -1,7 +1,11 @@
 # Current Implementation State
 
-Status: Phase 5 slice 2 — **Windows junctions as first-class objects —
-implemented and CI-verified** (contract `.ai/PHASE_5_WINDOWS_JUNCTIONS.md`,
+Status: Phase 5 slice 3 — **Windows alternate data streams (ADS) as part of
+the regular-file fingerprint — implemented** (contract
+`.ai/PHASE_5_ALTERNATE_DATA_STREAMS.md`, ADR-020; local gates green, CI
+recorded in TEST_STATUS.md). Phase 5 slice 2 — **Windows junctions as
+first-class objects — implemented and CI-verified** (contract
+`.ai/PHASE_5_WINDOWS_JUNCTIONS.md`,
 ADR-019; commits `33238bc` + `0f96706`; CI run #46 green on
 ubuntu/macOS/Windows — see TEST_STATUS.md). The
 rollback-performance phase (measurement-driven, ADR-018) remains
@@ -24,6 +28,40 @@ Phase 3 (continuous observation) complete and CI-verified
 (dependency-aware inspection) is implemented and CI-verified (run #23 on
 `4d89a2f`: ubuntu, macOS and windows all green) and documented in
 `.ai/PHASE_2_VERIFICATION_REPORT.md` (**Phase 2 VERIFIED**).
+
+## Phase 5 slice 3: Windows alternate data streams (implemented)
+
+- Named NTFS streams (`:name:$DATA`) on **regular files** are now part of
+  the file's state: `Fingerprint::RegularFile` gained
+  `streams: BTreeMap<name, CAS hash>`, skipped from serialization when
+  empty, so stream-free fingerprints are byte-identical to the pre-slice
+  form (no schema bump, no state-id drift; stream-carrying files gain
+  strictly stronger identity resolved by the existing reconciliation
+  checkpoint).
+- Capture: streams are enumerated (`FindFirstStreamW`, crate FFI site #5)
+  only for leaves already classified as regular files (reparse points are
+  never resolved), and their content is CAS-ingested exactly like file
+  content (hash-only under observe). Enumeration failure is
+  `ScanIncomplete` — an honest degradation, never an empty guess; a
+  non-`$DATA` stream entry is a named scan error, never a guessed parse.
+- Restore: quarantine rename (streams travel with the file) → install the
+  staged default-stream content → confinement verification of the leaf as
+  a real regular file (a stream write on a junction path follows the
+  reparse point out of the workspace — probe-verified) → streams written
+  from verified CAS blobs in bounded chunks → readonly attribute applied
+  last (a stream write on a readonly file is denied — probe-verified). The
+  step's path-scoped re-scan compares the complete fingerprint, so a
+  partial or wrong stream write fails the step into the existing recovery
+  machinery.
+- Quarantine/archive: `fs::rename` and `fs::copy` carry streams
+  (probe-verified); `verify_archive_pair` and
+  `artifact_matches_fingerprint` compare the full stream name/hash sets on
+  Windows (off-Windows a non-empty recorded stream set never matches — a
+  foreign fingerprint is refused, mirroring the FIFO/junction refusals).
+- Anchors and `doctor` verify every stream hash in the CAS.
+- Capability matrix amended (slice-1 contract §3): ADS on regular files
+  supported on Windows; xattrs/ACLs/ownership/sparse/chflags remain
+  deferred; directory-attached streams are documented non-state.
 
 ## Phase 5 slice 2: Windows junctions (implemented)
 

@@ -1,7 +1,64 @@
 # Phase 1 Test Status
 
-Status after Phase 5 slice 2 (Windows junctions). Newer records are at the
-top; earlier phase records are preserved below.
+Status after Phase 5 slice 3 (Windows alternate data streams). Newer records
+are at the top; earlier phase records are preserved below.
+
+## Phase 5 slice 3 (Windows alternate data streams)
+
+Contract: `.ai/PHASE_5_ALTERNATE_DATA_STREAMS.md`; decision: ADR-020. The
+ADS mechanics were probe-verified against a real NTFS volume before the
+contract was written (`FindFirstStreamW` entry forms, `path:name:$DATA`
+spec paths through std APIs, `fs::rename`/`fs::copy` carrying streams,
+stream writes on junction paths following the reparse point, stream writes
+denied on readonly files) — the probe example was a scratch tool and is not
+part of the tree.
+
+Local suite on Windows (x86_64-pc-windows-gnu, Rust 1.98.1, debug, NTFS):
+`cargo fmt --all -- --check` PASS, `cargo check --all-targets` PASS,
+clippy `--all-targets --all-features -- -D warnings` PASS, and the full
+suite **162 passed / 0 failed** (`cargo test --all-targets`): 61 lib,
+10 boundary_correlation, 13 foundation, 8 hardening, 15 phase2_dependency,
+17 phase3_watcher, 7 phase4_timeline, **12 phase5_platform** (3 model-level
+on all platforms + 5 Windows junction lifecycle + 4 Windows stream
+lifecycle), 3 rollback_path_scan (stream cases added to the
+fingerprint-equivalence test), 8 rollback_tree, 8 shell_integration.
+
+New stream tests (all driving the real capture/undo/redo machinery on
+Windows/NTFS unless noted):
+
+- `stream_fingerprints_are_backward_compatible` (all platforms, AC1): a
+  stream-free file serializes byte-identically to the pre-slice form, a
+  legacy manifest without the field deserializes, a stream-carrying
+  fingerprint round-trips.
+- `streams::named_streams_are_captured_into_the_fingerprint` (AC2): named,
+  empty, and spaced/dotted stream names captured with exact CAS bytes; the
+  default stream untouched; a stream-free file serializes without a
+  `streams` field.
+- `streams::stream_changes_are_captured_and_reversible` (AC3): modify/
+  create/delete of streams captured in one operation; undo restores the
+  exact recorded set (created stream removed), redo restores the new set
+  (deleted stream removed); the default stream is untouched throughout.
+- `streams::external_stream_divergence_refuses_undo` (AC4): an external
+  stream modification after capture refuses undo before any mutation;
+  main content untouched by the refusal.
+- `streams::stream_carrying_files_archive_faithfully` (AC5): quarantine
+  carries streams (rename), the archive copy carries them
+  (`fs::copy`/`CopyFileEx`), and `verify_archive_pair` compared stream
+  name sets and content before marking `Archived`.
+- `rollback_path_scan::path_scoped_fingerprints_match_the_full_scan`
+  (AC6, Windows block): stream-carrying files classify identically through
+  the path-scoped and full scans, with the full stream set recorded
+  (rollback-perf invariant preserved).
+
+Platform gaps (disclosed, not passing claims): POSIX platforms run only the
+model-level tests (AC1 + the refusal-path compile unit) — the stream
+variant is Windows-produced only, mirroring the junction slice's POSIX gap.
+`undo_of_nested_tree_with_many_files` was observed to fail once under full
+parallel suite load on the Windows host ("tree creation was not captured")
+and passed 3/3 in isolation plus the two full re-runs; recorded as a host
+load flake, not addressed by changing the test.
+
+CI: pending at slice-commit time; recorded below after verification.
 
 ## Phase 5 slice 2 (Windows junctions as first-class objects)
 

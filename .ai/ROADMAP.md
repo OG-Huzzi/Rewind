@@ -70,6 +70,13 @@ literal-leaf objects — recorded reparse data restored byte-faithfully and
 never followed — per `.ai/PHASE_5_WINDOWS_JUNCTIONS.md` (ADR-019); the
 capability matrix is amended there and in the slice-1 contract §3.
 
+Amendment slice 3 delivered (2026-09): Windows alternate data streams
+(named `$DATA` streams on regular files) are captured, restored, verified,
+quarantined, and archived as part of the file's fingerprint — per
+`.ai/PHASE_5_ALTERNATE_DATA_STREAMS.md` (ADR-020); directory-attached
+streams remain documented non-state, and xattrs/ACLs/ownership/sparse/
+chflags remain deferred with the recorded feasibility blockers.
+
 Post-roadmap measurement-driven phase (2026-09): rollback step verification
 narrowed to the affected path (ADR-018) after profiling showed per-step full
 scans were 82-84% of undo time with quadratic scaling — 400-file undo
