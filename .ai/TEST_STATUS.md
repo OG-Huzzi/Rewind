@@ -82,7 +82,26 @@ off-Windows refusal paths are compile-gated (`cfg(not(windows))`), mirroring
 every prior Phase 5 slice. FAT-family behavior was not probed (no FAT
 volume); a failed security read degrades honestly regardless.
 
-CI: recorded below after verification.
+CI (GitHub Actions, `OG-Huzzi/Rewind`, fmt/check/clippy -D warnings/test on
+ubuntu-latest, macos-latest, windows-latest):
+
+- Run #52 on `6ea9a6a`: ubuntu+macOS green; windows Tests failed — the
+  DACL tests' count assertions assumed an inheriting parent (runner temp
+  dirs create files with explicit SYSTEM/Admins/owner ACEs).
+- Run #53 on `1c95a3b`: windows still failed — runner icacls also converts
+  previously inherited ACEs to explicit copies, so baseline-relative
+  *counts* were still environment-dependent.
+- Run #54 on `9591f44`: windows still failed — the AC6 equivalence test had
+  the same count assertion.
+- **Run #55 on `dcc45ef`: green on ubuntu, macOS, and windows** (run id
+  36598054188) — the slice's CI verification. On this run windows first
+  failed in `boundary_correlation::overlapping_background_posts_keep_identity`
+  ("no operation for COMMAND_C"), a Phase 1.4 hook-timing test unrelated to
+  the DACL slice (it passed on every earlier run of this slice, including
+  three with the full DACL code); the failed job was re-run unchanged and
+  passed — recorded as a runner-load flake in the same class as the
+  `undo_of_nested_tree_with_many_files` flake above, with the
+  implementation untouched.
 
 ## Phase 5 slice 3 (Windows alternate data streams)
 
