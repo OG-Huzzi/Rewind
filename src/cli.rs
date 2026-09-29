@@ -895,8 +895,16 @@ fn doctor() -> Result<i32> {
             baseline, files, directories, named_pipes, junctions, unsupported
         );
         for fingerprint in state.manifest.entries.values() {
-            if let crate::model::Fingerprint::RegularFile { content_hash, .. } = fingerprint {
+            if let crate::model::Fingerprint::RegularFile {
+                content_hash,
+                streams,
+                ..
+            } = fingerprint
+            {
                 workspace.storage.cas.verify(content_hash)?;
+                for stream_hash in streams.values() {
+                    workspace.storage.cas.verify(stream_hash)?;
+                }
             }
         }
         let live = workspace.scan(None)?;

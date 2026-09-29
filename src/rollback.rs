@@ -305,8 +305,18 @@ fn execute_transition(
 
 fn create_anchor(workspace: &Workspace, manifest: &crate::model::Manifest) -> Result<String> {
     for fingerprint in manifest.entries.values() {
-        if let Fingerprint::RegularFile { content_hash, .. } = fingerprint {
+        if let Fingerprint::RegularFile {
+            content_hash,
+            streams,
+            ..
+        } = fingerprint
+        {
             workspace.storage.cas.verify(content_hash)?;
+            // Stream content is CAS content: the anchor verifies every
+            // stream hash too (Phase 5 slice 3).
+            for stream_hash in streams.values() {
+                workspace.storage.cas.verify(stream_hash)?;
+            }
         }
     }
     workspace.storage.catalog.insert_state(
@@ -574,7 +584,7 @@ fn apply_step(
     }
     match desired {
         Fingerprint::Absent => {}
-        Fingerprint::RegularFile { .. } => {
+        Fingerprint::RegularFile { streams, .. } => {
             let stage = before_step
                 .staging_path
                 .as_ref()
@@ -589,8 +599,28 @@ fn apply_step(
                     target_path.display()
                 ))
             })?;
-            apply_metadata(&target_path, desired)?;
+            // The leaf is verified a real regular file BEFORE any stream
+            // write: a stream write on a reparse-point path follows it out
+            // of the workspace (probe-verified). Streams are written before
+            // the recorded readonly attribute is applied, because a stream
+            // write on a readonly file is denied (probe-verified both
+            // directions).
             crate::paths::verify_mutation_confined(&workspace.root, &target_path, true)?;
+            #[cfg(windows)]
+            {
+                if !streams.is_empty() {
+                    install_named_streams(&workspace.storage.cas, &target_path, streams)?;
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                if !streams.is_empty() {
+                    return Err(RewindError::Unsupported(format!(
+                        "named streams cannot be restored on this platform: {path}"
+                    )));
+                }
+            }
+            apply_metadata(&target_path, desired)?;
         }
         Fingerprint::Directory { .. } => {
             ensure_parent_directories(&workspace.root, &target_path)?;
@@ -768,7 +798,10 @@ fn artifact_matches_fingerprint(path: &Path, expected: &Fingerprint) -> bool {
     match expected {
         Fingerprint::Absent => false,
         Fingerprint::RegularFile {
-            content_hash, size, ..
+            content_hash,
+            size,
+            streams: expected_streams,
+            ..
         } => {
             if !metadata.is_file() || metadata.len() != *size {
                 return false;
@@ -780,7 +813,49 @@ fn artifact_matches_fingerprint(path: &Path, expected: &Fingerprint) -> bool {
             if std::io::copy(&mut file, &mut hasher).is_err() {
                 return false;
             }
-            hasher.finalize().to_hex().as_str() == content_hash
+            if hasher.finalize().to_hex().as_str() != content_hash {
+                return false;
+            }
+            // Named streams are part of the recorded state: the quarantined
+            // object must still carry exactly the recorded stream set, each
+            // with the recorded bytes (Phase 5 slice 3). Verifying never
+            // resolves a reparse point — quarantined backups are regular
+            // files the quarantine rename carried in full.
+            #[cfg(windows)]
+            {
+                let live = match crate::scan::named_streams(path) {
+                    Ok(live) => live,
+                    Err(_) => return false,
+                };
+                if live.len() != expected_streams.len() {
+                    return false;
+                }
+                for (name, expected_hash) in expected_streams {
+                    if !live.iter().any(|(live_name, _)| live_name == name) {
+                        return false;
+                    }
+                    let spec = crate::scan::stream_spec(path, name);
+                    let Ok(mut stream) = fs::File::open(&spec) else {
+                        return false;
+                    };
+                    let mut hasher = blake3::Hasher::new();
+                    if std::io::copy(&mut stream, &mut hasher).is_err() {
+                        return false;
+                    }
+                    if hasher.finalize().to_hex().as_str() != expected_hash {
+                        return false;
+                    }
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                // A stream set can never exist off Windows; a foreign
+                // fingerprint claiming one is not matchable here.
+                if !expected_streams.is_empty() {
+                    return false;
+                }
+            }
+            true
         }
         Fingerprint::Directory { .. } => metadata.is_dir(),
         Fingerprint::Symlink { target, .. } => {
@@ -896,6 +971,50 @@ fn create_named_pipe(path: &Path, mode: u32) -> Result<()> {
             path.display(),
             std::io::Error::last_os_error()
         )));
+    }
+    Ok(())
+}
+
+/// Writes a regular file's named streams from verified CAS objects (Phase 5
+/// slice 3). Only ever called on a leaf `verify_mutation_confined` has just
+/// confirmed as a real regular file: writing a stream spec on a reparse
+/// point follows it out of the workspace. The write is direct — no
+/// temp+rename — because a stream-spec temp path is itself a stream spec;
+/// durability rides the journal step boundary exactly like the FIFO's mode
+/// application. Content is verified, then copied in bounded chunks: a
+/// stream blob is never loaded whole into memory, matching the staged
+/// protocol used for the default stream.
+#[cfg(windows)]
+fn install_named_streams(
+    cas: &crate::cas::Cas,
+    target: &Path,
+    streams: &std::collections::BTreeMap<String, String>,
+) -> Result<()> {
+    for (name, hash) in streams {
+        // Verify the CAS object first: a missing or corrupt stream blob
+        // fails here, before the filesystem is touched at all.
+        cas.verify(hash)?;
+        let mut blob = fs::File::open(cas.blob_path(hash)?)
+            .map_err(|error| RewindError::Cas(format!("open stream blob {hash}: {error}")))?;
+        let spec = crate::scan::stream_spec(target, name);
+        let mut stream = fs::File::create(&spec).map_err(|error| {
+            RewindError::Storage(format!(
+                "create stream {name} on {}: {error}",
+                target.display()
+            ))
+        })?;
+        std::io::copy(&mut blob, &mut stream).map_err(|error| {
+            RewindError::Storage(format!(
+                "write stream {name} on {}: {error}",
+                target.display()
+            ))
+        })?;
+        stream.sync_all().map_err(|error| {
+            RewindError::Storage(format!(
+                "flush stream {name} on {}: {error}",
+                target.display()
+            ))
+        })?;
     }
     Ok(())
 }
@@ -1705,6 +1824,41 @@ pub fn verify_archive_pair(source: &Path, destination: &Path) -> Result<()> {
                 "archive content mismatch for {}",
                 source.display()
             )));
+        }
+        // Named streams are content: the archived copy must carry every
+        // stream with identical bytes (`fs::copy` carries them on Windows,
+        // probe-verified) — a shallow copy can never authorize disposal of
+        // stream content (Phase 5 slice 3).
+        #[cfg(windows)]
+        {
+            let source_streams = crate::scan::named_streams(source)?;
+            let archive_streams = crate::scan::named_streams(destination)?;
+            let source_names: std::collections::BTreeSet<&str> = source_streams
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect();
+            let archive_names: std::collections::BTreeSet<&str> = archive_streams
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect();
+            if source_names != archive_names {
+                return Err(RewindError::Storage(format!(
+                    "archive stream set mismatch for {}: {source_names:?} vs {archive_names:?}",
+                    source.display()
+                )));
+            }
+            for (name, _size) in &source_streams {
+                let source_stream_hash =
+                    blake3_hash_path(crate::scan::stream_spec(source, name).as_ref())?;
+                let archive_stream_hash =
+                    blake3_hash_path(crate::scan::stream_spec(destination, name).as_ref())?;
+                if source_stream_hash != archive_stream_hash {
+                    return Err(RewindError::Storage(format!(
+                        "archive stream {name} content mismatch for {}",
+                        source.display()
+                    )));
+                }
+            }
         }
     } else if source_metadata.file_type().is_symlink() {
         let source_target = fs::read_link(source)?;

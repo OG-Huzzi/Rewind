@@ -206,6 +206,149 @@ pub fn reparse_junction_names(path: &Path) -> Option<(String, String)> {
     reparse_tag::junction_names(path)
 }
 
+/// Enumerates a regular file's named NTFS streams (`name`, size) — the
+/// authoritative stream table (Phase 5 slice 3). The default `::$DATA`
+/// entry (the file's own content) is not returned. The enumeration failure
+/// mode is an error, never an empty guess: callers surface it as an honest
+/// scan refusal. Callers enumerate only leaves already classified as
+/// regular files; reparse points are never resolved here.
+#[cfg(windows)]
+pub fn named_streams(path: &Path) -> crate::error::Result<Vec<(String, u64)>> {
+    stream_ffi::enumerate(path)
+}
+
+/// The openable spec of one named stream on `path` (`path:name:$DATA`) —
+/// the exact form both enumeration and std file APIs accept.
+#[cfg(windows)]
+pub fn stream_spec(path: &Path, name: &str) -> std::ffi::OsString {
+    let mut spec = std::ffi::OsString::from(path.as_os_str());
+    spec.push(":");
+    spec.push(name);
+    spec.push(":$DATA");
+    spec
+}
+
+/// The named-stream enumerator — the crate's fifth minimal FFI site (the
+/// read side; stream *writes* go through ordinary std file APIs).
+/// `FindFirstStreamW`/`FindNextStreamW` read the object's stream table. The
+/// handle is closed on every return path; a mid-list enumeration error is an
+/// error, never a silent truncation (a truncated stream set would be silent
+/// state loss).
+#[cfg(windows)]
+mod stream_ffi {
+    use std::ffi::c_void;
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+
+    use crate::error::{Result, RewindError};
+
+    const INVALID_HANDLE_VALUE: *mut c_void = usize::MAX as *mut c_void;
+    // FindNextStreamW signals the end of the stream list with
+    // ERROR_HANDLE_EOF (38) — probe- and test-verified; NO_MORE_FILES is
+    // accepted defensively as the generic Find* end marker. Any other code
+    // is an error: treating one as the end would silently truncate the
+    // stream set, which is silent state loss.
+    const ERROR_HANDLE_EOF: i32 = 38;
+    const ERROR_NO_MORE_FILES: i32 = 18;
+    // WIN32_FIND_STREAM_DATA: StreamSize (LARGE_INTEGER) followed by
+    // cStreamName[MAX_PATH + 36] WCHARs.
+    const STREAM_NAME_UNITS: usize = 260 + 36;
+    const FIND_STREAM_INFO_STANDARD: u32 = 0;
+
+    extern "system" {
+        fn FindFirstStreamW(
+            filename: *const u16,
+            info_level: u32,
+            find_stream_data: *mut c_void,
+            flags: u32,
+        ) -> *mut c_void;
+        fn FindNextStreamW(handle: *mut c_void, find_stream_data: *mut c_void) -> i32;
+        fn FindClose(handle: *mut c_void) -> i32;
+    }
+
+    #[repr(C)]
+    struct FindStreamData {
+        size: i64,
+        name: [u16; STREAM_NAME_UNITS],
+    }
+
+    pub fn enumerate(path: &Path) -> Result<Vec<(String, u64)>> {
+        let wide: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let mut data = FindStreamData {
+            size: 0,
+            name: [0; STREAM_NAME_UNITS],
+        };
+        let mut named = Vec::new();
+        // SAFETY: `wide` and `data` are owned for the duration of each call;
+        // the handle is closed on every return path; the calls only read the
+        // object's stream table and resolve nothing.
+        unsafe {
+            let handle = FindFirstStreamW(
+                wide.as_ptr(),
+                FIND_STREAM_INFO_STANDARD,
+                (&mut data as *mut FindStreamData).cast::<c_void>(),
+                0,
+            );
+            if handle == INVALID_HANDLE_VALUE {
+                return Err(RewindError::ScanIncomplete(format!(
+                    "cannot enumerate streams of {}: {}",
+                    path.display(),
+                    std::io::Error::last_os_error()
+                )));
+            }
+            loop {
+                let units = data
+                    .name
+                    .iter()
+                    .position(|&unit| unit == 0)
+                    .unwrap_or(STREAM_NAME_UNITS);
+                let entry = String::from_utf16(&data.name[..units]).map_err(|_| {
+                    RewindError::ScanIncomplete(format!(
+                        "non-Unicode stream name on {}",
+                        path.display()
+                    ))
+                })?;
+                if entry == "::$DATA" {
+                    // The default stream is the file's own content, already
+                    // recorded as content_hash/size.
+                } else {
+                    let Some(name) = entry
+                        .strip_prefix(':')
+                        .and_then(|rest| rest.strip_suffix(":$DATA"))
+                    else {
+                        return Err(RewindError::ScanIncomplete(format!(
+                            "unrecognized stream entry {entry:?} on {}; traversal and capture refused",
+                            path.display()
+                        )));
+                    };
+                    named.push((name.to_owned(), data.size as u64));
+                }
+                if FindNextStreamW(handle, (&mut data as *mut FindStreamData).cast::<c_void>()) == 0
+                {
+                    let error = std::io::Error::last_os_error();
+                    FindClose(handle);
+                    if !matches!(
+                        error.raw_os_error(),
+                        Some(ERROR_HANDLE_EOF) | Some(ERROR_NO_MORE_FILES)
+                    ) {
+                        return Err(RewindError::ScanIncomplete(format!(
+                            "stream enumeration of {} ended with an error: {error}",
+                            path.display()
+                        )));
+                    }
+                    break;
+                }
+            }
+            FindClose(handle);
+        }
+        Ok(named)
+    }
+}
+
 #[cfg(windows)]
 fn classify_reparse(
     metadata: &fs::Metadata,
@@ -486,10 +629,29 @@ fn classify_entry(
                 path.display()
             )));
         }
+        // Named NTFS streams (Phase 5 slice 3): the default stream is the
+        // content hashed above; every named stream is content too and is
+        // ingested exactly like file content. Enumeration happens only after
+        // the leaf was confirmed a regular file — reparse points never get
+        // here (a stream write on a reparse-point path follows it).
+        let mut streams = BTreeMap::new();
+        #[cfg(windows)]
+        {
+            for (name, _size) in named_streams(path)? {
+                let spec = stream_spec(path, &name);
+                let hash = if options.ingest {
+                    cas.put_file(spec.as_ref())?
+                } else {
+                    cas.hash_file(spec.as_ref())?
+                };
+                streams.insert(name, hash);
+            }
+        }
         return Ok(Fingerprint::RegularFile {
             content_hash: hash,
             size: after_metadata.len(),
             metadata: metadata_fingerprint(metadata),
+            streams,
         });
     }
     if file_type.is_symlink() {

@@ -84,6 +84,20 @@ fn path_scoped_fingerprints_match_the_full_scan() {
 
     #[cfg(windows)]
     {
+        // Named streams (Phase 5 slice 3) enter through ordinary std writes
+        // to stream specs: the fingerprint of a stream-carrying file must be
+        // identical through both observation paths.
+        for (name, content) in [("s1", b"V1\r\n".as_slice()), ("empty", b"".as_slice())] {
+            let spec = rewind::scan::stream_spec(&root.path().join("streamed.txt"), name);
+            fs::write(&spec, content).expect("write stream");
+        }
+        workspace
+            .reconcile_locked("stream classification")
+            .expect("reconcile");
+    }
+
+    #[cfg(windows)]
+    {
         // Junctions enter through the platform's own mklink: one live, one
         // dangling (its target never followed or checked for existence).
         // A readonly junction entry cannot be produced with built-in
@@ -130,6 +144,15 @@ fn path_scoped_fingerprints_match_the_full_scan() {
             manifest.entries.keys().all(|key| !key.starts_with("junc/")),
             "neither observation path may traverse a junction"
         );
+        // Stream-carrying files classify identically too, with the full
+        // stream set in the fingerprint (Phase 5 slice 3, AC6).
+        match manifest.get("streamed.txt") {
+            Fingerprint::RegularFile { streams, .. } => assert_eq!(streams.len(), 2),
+            other => panic!(
+                "streamed.txt must be a regular file, got {}",
+                other.kind_name()
+            ),
+        }
     }
 
     // The root itself degenerates to the full root walk: a directory whose

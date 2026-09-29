@@ -48,6 +48,15 @@ pub enum Fingerprint {
         content_hash: String,
         size: u64,
         metadata: MetadataFingerprint,
+        /// Named NTFS streams (alternate data streams) on this regular file:
+        /// stream name → CAS content hash (Phase 5 slice 3, Windows only).
+        /// The default stream is the file's own `content_hash`/`size`.
+        /// Skipped from serialization when empty, so stream-free files keep
+        /// the byte-identical pre-slice fingerprint form — no schema bump,
+        /// no drift; stream-carrying files gain a strictly stronger state
+        /// identity resolved by the existing reconciliation checkpoint.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        streams: BTreeMap<String, String>,
     },
     Directory {
         manifest_hash: String,
@@ -148,8 +157,20 @@ impl Fingerprint {
         match self {
             Self::Absent => "ABSENT".to_owned(),
             Self::RegularFile {
-                content_hash, size, ..
-            } => format!("REGULAR_FILE(hash={content_hash},size={size})"),
+                content_hash,
+                size,
+                streams,
+                ..
+            } => {
+                if streams.is_empty() {
+                    format!("REGULAR_FILE(hash={content_hash},size={size})")
+                } else {
+                    format!(
+                        "REGULAR_FILE(hash={content_hash},size={size},streams={})",
+                        streams.len()
+                    )
+                }
+            }
             Self::Directory {
                 manifest_hash,
                 entry_count,

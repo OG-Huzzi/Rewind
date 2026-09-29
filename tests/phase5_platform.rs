@@ -268,6 +268,367 @@ fn junction_fingerprint_is_backward_compatible() {
     assert!(manifest.contains_key("foo.txt"));
 }
 
+/// AC1 (all platforms): the stream set is an additive, skipped-when-empty
+/// component of the regular-file fingerprint. A stream-free file serializes
+/// byte-identically to the pre-slice form (no drift for existing
+/// workspaces), a pre-slice manifest without the field still deserializes,
+/// and a stream-carrying fingerprint round-trips.
+#[test]
+fn stream_fingerprints_are_backward_compatible() {
+    use std::collections::BTreeMap;
+
+    let stream_free = Fingerprint::RegularFile {
+        content_hash: "abc".to_owned(),
+        size: 1,
+        metadata: MetadataFingerprint {
+            mode: Some(0o644),
+            readonly: false,
+        },
+        streams: BTreeMap::new(),
+    };
+    let serialized = serde_json::to_string(&stream_free).expect("serialize");
+    assert_eq!(
+        serialized,
+        // Byte-identical to the pre-slice form: the empty stream set is
+        // skipped, so existing state ids do not drift.
+        r#"{"kind":"RegularFile","value":{"content_hash":"abc","size":1,"metadata":{"mode":420,"readonly":false}}}"#,
+        "a stream-free file must serialize exactly as before the slice"
+    );
+    let back: Fingerprint = serde_json::from_str(&serialized).expect("deserialize");
+    assert_eq!(back, stream_free);
+
+    // A pre-slice manifest (no streams field) still deserializes, with an
+    // empty stream set.
+    let legacy = r#"{"kind":"RegularFile","value":{"content_hash":"abc","size":1,"metadata":{"mode":420,"readonly":false}}}"#;
+    let legacy: Fingerprint = serde_json::from_str(legacy).expect("legacy deserialize");
+    match &legacy {
+        Fingerprint::RegularFile { streams, .. } => assert!(streams.is_empty()),
+        other => panic!("expected a regular file, got {}", other.kind_name()),
+    }
+
+    // A stream-carrying fingerprint round-trips through serde.
+    let mut streams = BTreeMap::new();
+    streams.insert("Zone.Identifier".to_owned(), "deadbeef".to_owned());
+    streams.insert("empty".to_owned(), "feedface".to_owned());
+    let carrying = Fingerprint::RegularFile {
+        content_hash: "abc".to_owned(),
+        size: 1,
+        metadata: MetadataFingerprint {
+            mode: None,
+            readonly: false,
+        },
+        streams,
+    };
+    let serialized = serde_json::to_string(&carrying).expect("serialize");
+    let back: Fingerprint = serde_json::from_str(&serialized).expect("deserialize");
+    assert_eq!(back, carrying);
+    assert!(carrying.describe().contains("streams=2"));
+}
+
+/// The named-stream lifecycle tests run only on Windows: that is the only
+/// platform whose filesystem produces named streams, and the mechanics were
+/// probe-verified against a real NTFS volume before implementation
+/// (`.ai/PHASE_5_ALTERNATE_DATA_STREAMS.md` §2). Every test drives the real
+/// capture, undo, and redo machinery.
+#[cfg(windows)]
+mod streams {
+    use std::collections::BTreeMap;
+    use std::fs;
+    use std::path::Path;
+
+    use rewind::model::Fingerprint;
+    use rewind::rollback::{redo, undo};
+    use rewind::scan::{named_streams, stream_spec};
+    use rewind::workspace::Workspace;
+
+    fn fixture() -> (tempfile::TempDir, tempfile::TempDir, Workspace) {
+        let root = tempfile::tempdir().expect("temporary root");
+        fs::write(root.path().join("host.txt"), b"MAIN").expect("write fixture");
+        let store = tempfile::tempdir().expect("temporary store");
+        let workspace = Workspace::init(root.path(), Some(store.path())).expect("initialize");
+        (root, store, workspace)
+    }
+
+    fn write_stream(root: &Path, file: &str, name: &str, content: &[u8]) {
+        let spec = stream_spec(&root.join(file), name);
+        fs::write(&spec, content).unwrap_or_else(|error| panic!("write stream {name}: {error}"));
+    }
+
+    fn read_stream(root: &Path, file: &str, name: &str) -> Vec<u8> {
+        let spec = stream_spec(&root.join(file), name);
+        fs::read(&spec).unwrap_or_else(|error| panic!("read stream {name}: {error}"))
+    }
+
+    fn streams_of(fingerprint: &Fingerprint) -> BTreeMap<String, String> {
+        match fingerprint {
+            Fingerprint::RegularFile { streams, .. } => streams.clone(),
+            other => panic!("expected a regular file, got {}", other.kind_name()),
+        }
+    }
+
+    fn baseline_manifest(workspace: &Workspace) -> rewind::model::Manifest {
+        workspace
+            .state_manifest(&workspace.baseline_id().expect("baseline"))
+            .expect("baseline manifest")
+    }
+
+    fn post_manifest(workspace: &Workspace, operation_id: i64) -> rewind::model::Manifest {
+        let record = workspace
+            .storage
+            .catalog
+            .operation(operation_id, workspace.id)
+            .expect("operation record");
+        let post_state_id = record.post_state_id.expect("post state id");
+        workspace
+            .state_manifest(&post_state_id)
+            .expect("post manifest")
+    }
+
+    /// AC2: named streams are captured with their exact bytes in the CAS;
+    /// every stream name and hash is recorded; a stream-free file records an
+    /// omitted (empty) stream set.
+    #[test]
+    fn named_streams_are_captured_into_the_fingerprint() {
+        let (root, _store, workspace) = fixture();
+        write_stream(
+            root.path(),
+            "host.txt",
+            "Zone.Identifier",
+            b"[ZoneTransfer]\r\nZoneId=3\r\n",
+        );
+        write_stream(root.path(), "host.txt", "empty", b"");
+        write_stream(root.path(), "host.txt", "has space.dot", b"O");
+
+        workspace
+            .reconcile_locked("stream classification")
+            .expect("reconcile");
+        let baseline = baseline_manifest(&workspace);
+        let recorded = streams_of(&baseline.get("host.txt"));
+        assert_eq!(
+            recorded.len(),
+            3,
+            "every named stream is recorded: {recorded:?}"
+        );
+        assert!(recorded.contains_key("Zone.Identifier"));
+        assert!(recorded.contains_key("empty"));
+        assert!(recorded.contains_key("has space.dot"));
+
+        // Each recorded hash is the CAS id of the exact stream bytes; the
+        // objects verify and read back byte-for-byte.
+        for (name, hash) in &recorded {
+            let bytes = workspace.storage.cas.read_bytes(hash).expect("CAS bytes");
+            let expected = match name.as_str() {
+                "Zone.Identifier" => b"[ZoneTransfer]\r\nZoneId=3\r\n".as_slice(),
+                "empty" => b"".as_slice(),
+                "has space.dot" => b"O".as_slice(),
+                other => panic!("unexpected stream {other}"),
+            };
+            assert_eq!(bytes, expected, "CAS bytes of stream {name}");
+        }
+
+        // The default stream is the file's own content and stays untouched.
+        match baseline.get("host.txt") {
+            Fingerprint::RegularFile {
+                content_hash, size, ..
+            } => {
+                assert_eq!(size, 4);
+                assert_eq!(
+                    workspace
+                        .storage
+                        .cas
+                        .read_bytes(&content_hash)
+                        .expect("main bytes"),
+                    b"MAIN"
+                );
+            }
+            other => panic!("expected a regular file, got {}", other.kind_name()),
+        }
+
+        // A stream-free file records no stream set at all: the fingerprint
+        // serializes exactly as before the slice.
+        fs::write(root.path().join("plain.txt"), b"P").expect("plain file");
+        workspace
+            .reconcile_locked("plain file")
+            .expect("reconcile 2");
+        let baseline = baseline_manifest(&workspace);
+        let serialized =
+            serde_json::to_string(&baseline.get("plain.txt")).expect("serialize plain");
+        assert!(
+            !serialized.contains("streams"),
+            "a stream-free file must not drift: {serialized}"
+        );
+    }
+
+    /// AC3: an operation that modifies, creates, and deletes streams is
+    /// captured; undo restores the exact recorded stream set byte-for-byte;
+    /// redo restores the new set; unrelated streams are untouched. Stream
+    /// mutations go through PowerShell: cmd's redirection cannot target
+    /// streams for deletion (`del` rejects the colon syntax) and rewriting
+    /// the *main* file through cmd destroys the streams outright.
+    #[test]
+    fn stream_changes_are_captured_and_reversible() {
+        let (root, _store, workspace) = fixture();
+        write_stream(root.path(), "host.txt", "s1", b"V1\r\n");
+        write_stream(root.path(), "host.txt", "s2", b"KEEP\r\n");
+        write_stream(root.path(), "host.txt", "s3", b"STABLE\r\n");
+        workspace
+            .reconcile_locked("stream pre-state")
+            .expect("reconcile");
+
+        let outcome = workspace
+            .run_command(&[
+                "powershell".to_owned(),
+                "-NoProfile".to_owned(),
+                "-Command".to_owned(),
+                "Set-Content -LiteralPath 'host.txt' -Stream 's1' -Value 'V2'; \
+                 Set-Content -LiteralPath 'host.txt' -Stream 's4' -Value 'NEW'; \
+                 Remove-Item -LiteralPath 'host.txt' -Stream 's2'"
+                    .to_owned(),
+            ])
+            .expect("capture stream changes");
+        let operation_id = outcome.operation_id.expect("operation id");
+        let post = post_manifest(&workspace, operation_id);
+        let streams = streams_of(&post.get("host.txt"));
+        assert_eq!(streams.len(), 3, "s2 deleted, s4 created: {streams:?}");
+        assert!(streams.contains_key("s4") && !streams.contains_key("s2"));
+        // The captured bytes are whatever PowerShell wrote (encoding is
+        // recorded, not assumed).
+        let captured_s1 = read_stream(root.path(), "host.txt", "s1");
+        let captured_s4 = read_stream(root.path(), "host.txt", "s4");
+
+        undo(&workspace, Some(operation_id), false).expect("undo stream changes");
+        assert_eq!(read_stream(root.path(), "host.txt", "s1"), b"V1\r\n");
+        assert_eq!(read_stream(root.path(), "host.txt", "s2"), b"KEEP\r\n");
+        assert_eq!(read_stream(root.path(), "host.txt", "s3"), b"STABLE\r\n");
+        assert!(
+            named_streams(&root.path().join("host.txt"))
+                .expect("live streams")
+                .iter()
+                .all(|(name, _)| name != "s4"),
+            "undo must remove the created stream"
+        );
+        assert_eq!(
+            fs::read(root.path().join("host.txt")).expect("main content"),
+            b"MAIN",
+            "the default stream is untouched by stream undo"
+        );
+
+        redo(&workspace, Some(operation_id)).expect("redo stream changes");
+        assert_eq!(read_stream(root.path(), "host.txt", "s1"), captured_s1);
+        assert_eq!(read_stream(root.path(), "host.txt", "s3"), b"STABLE\r\n");
+        assert_eq!(read_stream(root.path(), "host.txt", "s4"), captured_s4);
+        assert!(
+            named_streams(&root.path().join("host.txt"))
+                .expect("live streams")
+                .iter()
+                .all(|(name, _)| name != "s2"),
+            "redo must remove the deleted stream"
+        );
+    }
+
+    /// AC4: an external stream modification after capture refuses undo
+    /// before any mutation — stream content is conflict-checked exactly like
+    /// main content.
+    #[test]
+    fn external_stream_divergence_refuses_undo() {
+        let (root, _store, workspace) = fixture();
+        write_stream(root.path(), "host.txt", "s1", b"V1\r\n");
+        workspace
+            .reconcile_locked("stream pre-state")
+            .expect("reconcile");
+        let outcome = workspace
+            .run_command(&[
+                "cmd".to_owned(),
+                "/C".to_owned(),
+                "echo CHANGED> host.txt:s1".to_owned(),
+            ])
+            .expect("capture stream change");
+        let operation_id = outcome.operation_id.expect("operation id");
+
+        // External writer changes the stream after the capture.
+        write_stream(root.path(), "host.txt", "s1", b"EXTERNAL\r\n");
+        let refusal = undo(&workspace, Some(operation_id), false);
+        assert!(
+            refusal.is_err(),
+            "undo must refuse when a recorded stream diverged"
+        );
+        assert_eq!(
+            read_stream(root.path(), "host.txt", "s1"),
+            b"EXTERNAL\r\n",
+            "nothing may be mutated by the refusal"
+        );
+        assert_eq!(
+            fs::read(root.path().join("host.txt")).expect("main content"),
+            b"MAIN",
+            "the default stream is untouched by the refusal"
+        );
+    }
+
+    /// AC5: quarantine carries streams (rename), the archive copy carries
+    /// them (`fs::copy`/`CopyFileEx`), and archive verification compares
+    /// them. The captured operation modifies a *stream*, so the quarantined
+    /// post-state file still carries its stream set into the archive.
+    /// (Rewriting the main file through a shell destroys streams outright —
+    /// `CREATE_ALWAYS` semantics — which is precisely the silent loss this
+    /// slice records and can undo.)
+    #[test]
+    fn stream_carrying_files_archive_faithfully() {
+        let (root, store, workspace) = fixture();
+        write_stream(root.path(), "host.txt", "s1", b"V1\r\n");
+        write_stream(
+            root.path(),
+            "host.txt",
+            "Zone.Identifier",
+            b"[ZoneTransfer]\r\n",
+        );
+        workspace
+            .reconcile_locked("stream pre-state")
+            .expect("reconcile");
+
+        let outcome = workspace
+            .run_command(&[
+                "cmd".to_owned(),
+                "/C".to_owned(),
+                "echo REPLACED> host.txt:s1".to_owned(),
+            ])
+            .expect("capture stream replacement");
+        let operation_id = outcome.operation_id.expect("operation id");
+
+        undo(&workspace, Some(operation_id), false).expect("undo stream replacement");
+        assert_eq!(read_stream(root.path(), "host.txt", "s1"), b"V1\r\n");
+        assert_eq!(
+            fs::read(root.path().join("host.txt")).expect("main content"),
+            b"MAIN"
+        );
+
+        // The committed transaction archived the quarantined post-state file
+        // — which still carried both streams — and verify_archive_pair
+        // compared stream sets and content, so the archive copy must carry
+        // every stream.
+        let archive_root = store.path().join("projects");
+        let mut archived_stream_files = 0;
+        fn walk(dir: &Path, sink: &mut usize) {
+            for entry in fs::read_dir(dir).expect("read_dir") {
+                let entry = entry.expect("entry");
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, sink);
+                } else if named_streams(&path)
+                    .map(|streams| !streams.is_empty())
+                    .unwrap_or(false)
+                {
+                    *sink += 1;
+                }
+            }
+        }
+        walk(&archive_root, &mut archived_stream_files);
+        assert!(
+            archived_stream_files > 0,
+            "the archive must contain the stream-carrying quarantined file"
+        );
+    }
+}
+
 /// The junction lifecycle tests run only on Windows: that is the only
 /// platform whose scanner produces the variant, and its buffer layout and
 /// creation mechanics were probe-verified against real `mklink /J`
