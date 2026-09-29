@@ -633,7 +633,10 @@ fn classify_entry(
         // content hashed above; every named stream is content too and is
         // ingested exactly like file content. Enumeration happens only after
         // the leaf was confirmed a regular file — reparse points never get
-        // here (a stream write on a reparse-point path follows it).
+        // here (a stream write on a reparse-point path follows it). The
+        // binding is mutated only by the Windows enumeration; POSIX has no
+        // named streams, so the mutability is silently unused there.
+        #[cfg_attr(not(windows), allow(unused_mut))]
         let mut streams = BTreeMap::new();
         #[cfg(windows)]
         {
