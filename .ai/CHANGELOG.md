@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Phase 5 slices 1–4 (platform expansion, contracts in `.ai/PHASE_5_*.md`):
+  POSIX named pipes (FIFOs) as first-class objects (ADR-017); Windows
+  junctions as first-class literal-leaf objects restored from recorded
+  reparse data (ADR-019); Windows alternate data streams — named `$DATA`
+  streams on regular files — captured, restored, and archived as CAS
+  content (ADR-020); and explicit NTFS DACL ACEs (plus the protected flag)
+  on regular files captured, restored, verified, and archived as part of
+  state identity, with archive copies re-applying what `fs::copy` drops
+  (ADR-021). Every slice is additive (`skip_serializing_if`) so
+  metadata-free fingerprints stay byte-identical — no schema bump; every
+  unsupported or unreadable case degrades or refuses explicitly per the
+  object×platform capability matrix.
+
 - Phase 3 — continuous observation (complete and CI-verified, run
   #36111890265 on `d69fdca`):
   added the optional advisory watcher under `src/watch/` — platform-neutral

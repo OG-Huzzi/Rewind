@@ -1,8 +1,11 @@
 # Current Implementation State
 
-Status: Phase 5 slice 3 — **Windows alternate data streams (ADS) as part of
-the regular-file fingerprint — implemented** (contract
-`.ai/PHASE_5_ALTERNATE_DATA_STREAMS.md`, ADR-020; local gates green and
+Status: Phase 5 slice 4 — **explicit NTFS DACL ACEs as part of the
+regular-file fingerprint — implemented** (contract
+`.ai/PHASE_5_NTFS_DACL.md`, ADR-021; local gates green — 166/0 — CI
+recorded in TEST_STATUS.md). Phase 5 slice 3 — **Windows alternate data
+streams (ADS) as part of the regular-file fingerprint — implemented and
+CI-verified** (contract `.ai/PHASE_5_ALTERNATE_DATA_STREAMS.md`, ADR-020;
 CI run #49 on `1721503` green on ubuntu/macOS/Windows — see
 TEST_STATUS.md). Phase 5 slice 2 — **Windows junctions as
 first-class objects — implemented and CI-verified** (contract
@@ -29,6 +32,42 @@ Phase 3 (continuous observation) complete and CI-verified
 (dependency-aware inspection) is implemented and CI-verified (run #23 on
 `4d89a2f`: ubuntu, macOS and windows all green) and documented in
 `.ai/PHASE_2_VERIFICATION_REPORT.md` (**Phase 2 VERIFIED**).
+
+## Phase 5 slice 4: Windows NTFS DACLs — explicit ACEs (implemented)
+
+- A regular file's explicit (non-inherited) DACL ACEs plus the protected
+  flag are now part of the file's state: `Fingerprint::RegularFile` gained
+  `dacl: Option<DaclFingerprint>` (`DaclFingerprint { protected,
+  aces: Vec<DaclAce> }`; ACE = type/flags-minus-inherited/mask/SID string,
+  in ACL order). `None` is skipped from serialization, so DACL-free
+  fingerprints are byte-identical to the pre-slice form (no schema bump, no
+  state-id drift; DACL-carrying files gain strictly stronger identity
+  resolved by the existing reconciliation checkpoint).
+- Capture: the security descriptor is read (`GetNamedSecurityInfoW` +
+  `GetSecurityDescriptorControl` — crate FFI site #6, read-only) only for
+  leaves already classified as regular files. An unreadable descriptor
+  (including deny/protected-DACL owner lockout), a NULL DACL
+  (allow-everything), and non-simple ACE types are named `ScanIncomplete`
+  errors — never empty/`None` guesses. DACLs are not CAS content; anchors
+  and doctor are unchanged.
+- Restore: quarantine rename (probe-verified to carry the DACL) → staged
+  content install → confinement verification → metadata (readonly does not
+  block the DACL apply — probe-verified) → rebuild the recorded ACEs in
+  order and apply via `SetNamedSecurityInfoW` under the recorded protection
+  flag (UNPROTECTED re-derives inherited ACEs from the live parent —
+  probe-verified to reproduce the original SDDL byte-for-byte; SIDs are
+  restored literally from string form, no account resolution). The step's
+  path-scoped re-scan compares the complete fingerprint; a wrong or partial
+  DACL fails the step into the existing `RecoveryRequired` machinery.
+- Archive: `fs::copy` drops explicit ACEs (probe-verified), so
+  `copy_artifact` re-applies the source's live explicit DACL to the copy;
+  `verify_archive_pair` and `artifact_matches_fingerprint` compare explicit
+  ACE sets and protected flags (off-Windows a recorded DACL never matches —
+  foreign fingerprints are refused, mirroring FIFOs/junctions/streams).
+- Capability matrix amended (slice-1 contract §3): explicit NTFS DACL ACEs
+  on regular files supported on Windows; directory DACLs, owner/group, and
+  SACL remain deferred/privileged; POSIX xattrs remain deferred with the
+  recorded no-probe-host blocker.
 
 ## Phase 5 slice 3: Windows alternate data streams (implemented)
 

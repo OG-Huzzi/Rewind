@@ -1,7 +1,77 @@
 # Phase 1 Test Status
 
-Status after Phase 5 slice 3 (Windows alternate data streams). Newer records
+Status after Phase 5 slice 4 (Windows NTFS DACLs). Newer records
 are at the top; earlier phase records are preserved below.
+
+## Phase 5 slice 4 (Windows NTFS DACLs — explicit ACEs)
+
+Contract: `.ai/PHASE_5_NTFS_DACL.md`; decision: ADR-021. The DACL mechanics
+were probed on the host (Windows 11 build 26200, NTFS, non-admin) through
+the exact implementation APIs before the contract was written
+(`GetNamedSecurityInfoW`/`SetNamedSecurityInfoW` read→set→read SDDL-identical,
+explicit-only rebuild re-deriving inherited ACEs, protected flag round trip,
+`fs::rename` preserving the DACL, `fs::copy` dropping explicit ACEs, DACL
+apply working on readonly files) — the probe was a scratch tool and is not
+committed.
+
+Local suite on Windows (x86_64-pc-windows-gnu, Rust 1.98.1, debug, NTFS):
+`cargo fmt --all -- --check` PASS, `cargo check --all-targets` PASS,
+clippy `--all-targets --all-features -- -D warnings` PASS, and
+`cargo test --all-targets` **166 passed / 0 failed** — the same 166/0 under
+`--all-targets --all-features`: 61 lib, 10 boundary_correlation, 13
+foundation, 8 hardening, 15 phase2_dependency, 17 phase3_watcher, 7
+phase4_timeline, **16 phase5_platform** (3 model-level on all platforms + 5
+Windows junction lifecycle + 4 Windows stream lifecycle + 4 Windows DACL
+lifecycle), 3 rollback_path_scan (DACL cases added to the
+fingerprint-equivalence test), 8 rollback_tree, 8 shell_integration. The
+rollback bench harness still runs end-to-end at N=9 (mixed scenario) with
+the new capture path.
+
+New DACL tests (all driving the real capture/undo/redo machinery on
+Windows/NTFS unless noted):
+
+- `stream_fingerprints_are_backward_compatible` (all platforms, AC1)
+  extended: DACL-free files still serialize byte-identically; DACL-carrying
+  and protected-empty (deny-all) fingerprints round-trip through serde;
+  `describe()` names the record.
+- `dacl::explicit_dacls_are_captured_into_the_fingerprint` (AC2): an
+  icacls grant is captured with its exact type/flags/mask/SID string and the
+  unprotected flag; a plain file serializes without the field.
+- `dacl::dacl_changes_are_captured_and_reversible` (AC3): undo restores the
+  exact DACL-free pre-state, redo the exact grant; the protected
+  (`/inheritance:d`) state with its copied explicit ACEs undoes and redoes
+  exactly; content untouched throughout.
+- `dacl::external_dacl_divergence_refuses_undo` (AC4): an external DACL
+  modification after capture refuses undo before any mutation; both grants
+  survive untouched.
+- `dacl::dacl_carrying_files_archive_faithfully` (AC5): the archive copy
+  carries the quarantined file's explicit DACL (`copy_artifact` re-applies
+  what `fs::copy` drops) and matched after `verify_archive_pair` compared
+  both sides.
+- `rollback_path_scan::path_scoped_fingerprints_match_the_full_scan`
+  (AC6, Windows block): DACL-carrying files classify identically through
+  the path-scoped and full scans, with the explicit ACE record intact.
+
+Empirical findings recorded during testing (behavior, not flakes):
+
+- icacls deny masks include SYNCHRONIZE (e.g. `(W)` = 0x100116): a
+  deny-ACE'd file denies even reads, so Rewind's capture fails with Access
+  Denied and the workspace degrades honestly (the contract's
+  `ScanIncomplete` path). Tests use grants, which keep the file scannable.
+- `icacls /inheritance:r` deletes inherited ACEs, producing the
+  protected-empty deny-all state (real state; unreadable; capture degrades
+  honestly). `/inheritance:d` disables inheritance and copies the ACEs —
+  the testable protected form.
+- icacls *replaces* an existing trustee's grant instead of adding a second
+  one; divergence tests grant a second trustee.
+
+Platform gaps (disclosed, not passing claims): POSIX platforms run only the
+model-level tests (AC1); the DACL variant is Windows-produced only, and the
+off-Windows refusal paths are compile-gated (`cfg(not(windows))`), mirroring
+every prior Phase 5 slice. FAT-family behavior was not probed (no FAT
+volume); a failed security read degrades honestly regardless.
+
+CI: recorded below after verification.
 
 ## Phase 5 slice 3 (Windows alternate data streams)
 

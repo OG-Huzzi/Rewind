@@ -4,7 +4,9 @@ Status: Phases 1–5 delivered and CI-verified (see CURRENT_STATE.md); the
 current phase gate is the Phase 5 platform-expansion contract with its
 object×platform capability matrix (`.ai/PHASE_5_PLATFORM_EXPANSION.md`),
 amended by slice 2 for Windows junctions
-(`.ai/PHASE_5_WINDOWS_JUNCTIONS.md`).
+(`.ai/PHASE_5_WINDOWS_JUNCTIONS.md`), slice 3 for Windows alternate data
+streams (`.ai/PHASE_5_ALTERNATE_DATA_STREAMS.md`), and slice 4 for explicit
+NTFS DACL ACEs (`.ai/PHASE_5_NTFS_DACL.md`).
 
 ## Purpose
 

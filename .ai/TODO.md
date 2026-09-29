@@ -28,3 +28,15 @@
       performance recorded in the verification report.
 - [x] CI green on ubuntu/macos/windows for the pushed commit
       (run #36111890265 on `d69fdca`, after two diagnostic rounds).
+
+# Phase 5 TODO
+
+- [x] Slice 1 — POSIX named pipes as first-class objects (ADR-017).
+- [x] Slice 2 — Windows junctions as first-class literal-leaf objects (ADR-019).
+- [x] Slice 3 — Windows alternate data streams on regular files (ADR-020).
+- [x] Slice 4 — explicit NTFS DACL ACEs on regular files (ADR-021).
+- [ ] Deferred metadata classes (each requires its own contract amendment
+      and probe evidence before implementation): directory DACLs; POSIX
+      xattrs (blocked: no POSIX probe host — no WSL/Docker on the working
+      machine); owner/group and SACL (privilege-bound); sparse-file layout;
+      chflags (no macOS host).

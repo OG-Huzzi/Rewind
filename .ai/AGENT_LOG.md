@@ -1,5 +1,27 @@
 # Agent Log
 
+## Phase 5.4 execution (slice 4: explicit NTFS DACL ACEs) — implemented
+
+- User approved the Windows-DACL candidate after the audit below.
+- Probe round 2 (scratch tool, not committed) through the implementation
+  APIs: explicit-only rebuild + `SetNamedSecurityInfoW(UNPROTECTED)`
+  reproduces the SDDL byte-identically (inherited ACEs re-derive); the
+  protected flag round-trips (`D:PAI`, control 0x9404); `fs::rename`
+  preserves the DACL; **`fs::copy` drops explicit ACEs** (archive re-apply
+  required); DACL apply works on readonly files; a protected deny-all DACL
+  can lock out even the owner (reads must degrade honestly).
+- Contract `.ai/PHASE_5_NTFS_DACL.md` + ADR-021 + matrix committed
+  (`cb3f963`) before implementation; implementation commit `d5b84fa`.
+  One contract amendment during implementation (documented in the contract
+  status): a NULL DACL (`SE_DACL_PRESENT` set, null pointer —
+  allow-everything) is a named `ScanIncomplete` error, not `None`.
+- Empirical testing findings (recorded in TEST_STATUS): icacls deny masks
+  include SYNCHRONIZE (denies even reads → honest degradation; tests use
+  grants); `/inheritance:r` produces protected-empty deny-all while
+  `/inheritance:d` copies ACEs (the testable protected form); icacls
+  replaces an existing trustee's grant.
+- Gates: fmt, check, clippy `-D warnings`, `cargo test --all-targets`
+  166/0 (also under `--all-features`), bench harness sanity at N=9.
 ## Phase 5.4 audit (candidate selection) — STOPPED pending approval
 
 - Baseline verified: `main` at `642577e` = `origin/main`, tree clean; slice-3

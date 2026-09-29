@@ -301,3 +301,52 @@ analysis:
   streams on symlinks/junctions are unreachable by construction (reparse
   leaves are never enumerated). The residual TOCTOU window is the
   documented Phase 0.7 conditional guarantee, unchanged.
+## 16. Phase 5 slice 4 (Windows NTFS DACLs — explicit ACEs)
+
+A regular file's explicit (non-inherited) DACL ACEs plus the protected flag
+became part of state identity (ADR-021, contract
+`.ai/PHASE_5_NTFS_DACL.md`). Safety analysis:
+
+- **The hole this closes was silent loss.** Explicit permission state
+  (`icacls` grant/deny, inheritance removal) was invisible to state identity:
+  undo restored a file from staged content alone and silently dropped
+  recorded permission state. Explicit ACEs are now captured, compared,
+  restored, verified, quarantined, and archived.
+- **No schema drift.** The `dacl` field is `None`-skipped: DACL-free
+  fingerprints serialize byte-identically to the pre-slice form, so existing
+  state ids are unchanged; files with explicit permission state gain
+  strictly stronger identity, resolved by the existing reconciliation
+  checkpoint.
+- **Inherited ACEs are never state.** They are parent-derived; recording
+  them would make fingerprints parent-path-dependent. Restore with
+  UNPROTECTED re-derives them from the live parent (probe-verified to
+  reproduce the original SDDL byte-for-byte); inherited-ACE drift is
+  therefore never a false fidelity failure.
+- **No guessed state.** An unreadable security descriptor — including the
+  probe-verified case of a deny/protected DACL locking out even the owner —
+  is `ScanIncomplete` (honest degradation). A NULL DACL (allow-everything)
+  is a named scan error, not a `None` masquerading as "nothing to record".
+  Non-simple ACE types are refused by name (their body layout differs;
+  parsing them as simple ACEs would corrupt the SID). Off Windows, a
+  recorded DACL refuses restoration and never matches a quarantined
+  artifact.
+- **No traversal.** Capture happens only for leaves `symlink_metadata`
+  already classified as regular files; restore applies the DACL only after
+  `verify_mutation_confined(leaf_exists = true)`. The residual TOCTOU
+  window is the documented Phase 0.7 conditional guarantee, unchanged.
+- **Restore is verified, not assumed.** The step's path-scoped re-scan
+  compares the complete fingerprint (content, streams, DACL); a wrong or
+  partially applied DACL fails the step into the existing `RecoveryRequired`
+  machinery — never a success report with lost permission state. A crash
+  mid-step classifies as today, with the quarantined original (DACL intact;
+  rename preserves it, probe-verified) as the recovery record.
+- **Archive fidelity.** `fs::copy` drops explicit ACEs (probe-verified), so
+  `copy_artifact` re-applies the source's live explicit DACL to the archive
+  copy, and `verify_archive_pair` compares explicit-ACE sets and protected
+  flags before `ArchiveStatus::Archived` is set — a permission-stripping
+  copy can never authorize disposal of the last surviving copy.
+  `artifact_matches_fingerprint` applies the same comparison to quarantined
+  backups (recovery classification).
+- **Owner/group and SACL are excluded, stated not hidden** — privilege-bound
+  (SeTakeOwnershipPrivilege / SeSecurityPrivilege); never captured, never
+  restored. Directory DACLs are deferred as a later slice.

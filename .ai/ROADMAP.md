@@ -77,6 +77,13 @@ quarantined, and archived as part of the file's fingerprint — per
 streams remain documented non-state, and xattrs/ACLs/ownership/sparse/
 chflags remain deferred with the recorded feasibility blockers.
 
+Amendment slice 4 delivered (2026-09): explicit NTFS DACL ACEs (plus the
+protected flag) on regular files are captured, restored, verified,
+quarantined, and archived as part of the file's fingerprint — per
+`.ai/PHASE_5_NTFS_DACL.md` (ADR-021); directory DACLs, owner/group, SACL,
+sparse layout, and chflags remain deferred, and POSIX xattrs remain
+deferred with the recorded no-POSIX-probe-host blocker.
+
 Post-roadmap measurement-driven phase (2026-09): rollback step verification
 narrowed to the affected path (ADR-018) after profiling showed per-step full
 scans were 82-84% of undo time with quadratic scaling — 400-file undo

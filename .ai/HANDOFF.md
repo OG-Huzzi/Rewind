@@ -1,5 +1,22 @@
 # Phase 3 Implementation Handoff
 
+**Phase 5 slice 4 DACL invariants (do not regress):** a regular file's
+explicit DACL (`dacl: Option<DaclFingerprint>` — `None`-skipped, DACL-free
+fingerprints must stay byte-identical) records only explicit
+(non-`INHERITED_ACE`) allow/deny ACEs in ACL order plus the protected flag.
+Capture happens only on leaves `symlink_metadata` already classified as
+regular files; an unreadable descriptor, a NULL DACL (allow-everything), and
+non-simple ACE types are `ScanIncomplete` errors — never `None`, never a
+guessed parse. Restore applies the rebuilt ACL only after
+`verify_mutation_confined(leaf_exists = true)` and `apply_metadata` (readonly
+does not block it), with `PROTECTED_DACL_SECURITY_INFORMATION` or
+`UNPROTECTED_DACL_SECURITY_INFORMATION` exactly as recorded; SIDs are
+materialized from recorded strings, never name-resolved. `fs::copy` drops
+explicit ACEs — `copy_artifact` must keep re-applying the source's live
+explicit DACL before archive verification compares both sides. Directory
+DACLs, owner/group, and SACL are not state; do not widen the capability
+matrix without a contract amendment.
+
 **Phase 5 slice 3 stream invariants (do not regress):** named NTFS streams
 are part of the regular-file fingerprint (`streams` map, skipped when
 empty — stream-free fingerprints must stay byte-identical; do not add
@@ -46,14 +63,18 @@ not remove the entry/final full scans — the final full-scan state comparison
 is the only global deviation check. Journal durability writes are
 intentionally untouched.
 
-**The crate has five documented minimal FFI sites:** `reparse_tag`
+**The crate has six documented minimal FFI sites:** `reparse_tag`
 (`src/scan.rs`), `CreateProcessW` (`src/watch/detach_windows.rs`),
 `mkfifo(2)` (`src/rollback.rs` — `std::os::unix::fs::mkfifo` is unstable,
 rust-lang/rust#139324; the FFI declares `mode_t` per platform ABI:
 `c_ushort` on macOS, `c_uint` on Linux), `FSCTL_SET_REPARSE_POINT`
-(`src/rollback.rs`, junction slice), and `FindFirstStreamW`/
-`FindNextStreamW` (`src/scan.rs::stream_ffi`, ADS slice — read-only
-enumeration; stream writes go through ordinary std file APIs).
+(`src/rollback.rs`, junction slice), `FindFirstStreamW`/`FindNextStreamW`
+(`src/scan.rs::stream_ffi`, ADS slice — read-only enumeration; stream
+writes go through ordinary std file APIs), and the advapi32 DACL pair —
+`GetNamedSecurityInfoW`+`GetSecurityDescriptorControl`+`ConvertSidToStringSidW`
+(`src/scan.rs::dacl_ffi`, read-only capture) and
+`ConvertStringSidToSidW`+`GetLengthSid`+`SetNamedSecurityInfoW`
+(`src/rollback.rs`, DACL slice restore).
 
 The Phase 3 audit fixes were merged into `main` via PR #1 (merge commit
 `c4aeef7`; branch deleted). Phase 4's first slice — the read-only
