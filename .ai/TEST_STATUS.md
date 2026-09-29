@@ -101,7 +101,12 @@ ubuntu-latest, macos-latest, windows-latest):
   three with the full DACL code); the failed job was re-run unchanged and
   passed — recorded as a runner-load flake in the same class as the
   `undo_of_nested_tree_with_many_files` flake above, with the
-  implementation untouched.
+  implementation untouched. The record commit `b188e06` itself saw one
+  more instance of the same flake family on ubuntu
+  (`shell_integration::bash_rapid_commands_keep_command_identity`, a
+  doc-only commit, green on re-run) — three timing flakes in six runs, all
+  in Phase 1.3/1.4 hook-timing tests under runner load, none touching this
+  slice's code paths.
 
 ## Phase 5 slice 3 (Windows alternate data streams)
 
