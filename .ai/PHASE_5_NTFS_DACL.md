@@ -6,11 +6,14 @@ through the exact APIs the implementation uses** — `GetNamedSecurityInfoW`,
 `SetNamedSecurityInfoW`, `ConvertSidToStringSidW`,
 `ConvertSecurityDescriptorToStringSecurityDescriptorW`,
 `GetSecurityDescriptorControl` — before this contract was written. The probe
-was a scratch tool and is not committed. One amendment during
-implementation (§4): a NULL DACL (`SE_DACL_PRESENT` set with a null
-pointer — allow-everything) is a named `ScanIncomplete` error, not `None`,
-because recording it as "no explicit state" would understate the object's
-actual permission state.
+was a scratch tool and is not committed. Two amendments (§4, §8, recorded
+where they apply): a NULL DACL (`SE_DACL_PRESENT` set with a null pointer —
+allow-everything) is a named `ScanIncomplete` error, not `None`, because
+recording it as "no explicit state" would understate the object's actual
+permission state; and whether a plain file records `None` depends on the
+parent directory's default ACL — non-inheriting parents (GitHub Windows
+runners' temp dirs) create files with explicit SYSTEM/Admins/owner ACEs,
+which the capture records faithfully.
 
 Baseline: `main` at `a4bf08c` (Phase 5 slice 3 CI-verified, runs #49/#50
 green on ubuntu/macOS/Windows).
@@ -220,12 +223,21 @@ matches a foreign fingerprint that claims a DACL off-Windows.
   through serde, including the protected-empty (deny-all) case.
 - **AC2 (Windows):** a file with an explicit deny and/or allow ACE scans
   with exactly those ACEs recorded (type, flags, mask, SID string) and the
-  unprotected control flag; a plain file scans with an omitted (`None`)
-  DACL.
-- **AC3 (Windows):** an external `icacls` grant/deny and an
-  `/inheritance:r` (protected) change are captured; undo restores the exact
-  recorded explicit ACE set and control flag (verified by re-read); redo
-  restores the post-state; the protected-empty (deny-all) state round-trips.
+  unprotected control flag. **Amended during CI verification:** whether a
+  *plain* file records `None` depends on the filesystem, not on Rewind —
+  on directories with non-inheriting default ACLs (the GitHub Windows
+  runners' temp dirs), even a fresh file is created with explicit
+  SYSTEM/Administrators/owner ACEs, and the capture must (and does) record
+  exactly those; the tests are therefore baseline-relative. On an
+  inheriting parent a plain file scans with an omitted (`None`) DACL
+  (asserted where the environment allows).
+- **AC3 (Windows):** an external `icacls` grant and an `/inheritance:d`
+  (protected) change are captured; undo restores the exact recorded
+  explicit ACE set and control flag (verified by re-read); redo restores
+  the post-state. **Amended during CI verification:** `/inheritance:r`
+  *deletes* inherited ACEs, producing the protected-empty deny-all state —
+  real state, but unreadable, so Rewind's capture degrades honestly
+  (`ScanIncomplete`) and the testable protected form is `/inheritance:d`.
 - **AC4 (Windows):** an external DACL modification after capture refuses
   undo before any mutation (conflict), exactly as for content.
 - **AC5 (Windows):** the archive copy of a DACL-carrying quarantined file

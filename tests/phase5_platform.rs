@@ -735,25 +735,36 @@ mod dacl {
         }
     }
 
-    /// AC2: explicit ACEs (an icacls grant) are captured with their exact
-    /// type, flags, mask, and SID string, with the unprotected control
-    /// flag; a plain file records no DACL at all — its fingerprint
-    /// serializes without the field (no drift). The tests grant, not deny:
-    /// icacls deny masks include SYNCHRONIZE, which locks even reads out of
-    /// the file (repro-verified) — that case must degrade honestly as
-    /// ScanIncomplete, and a degraded workspace has nothing left to assert.
+    /// AC2: an icacls grant is captured with its exact type, flags, mask,
+    /// and SID string, with the unprotected control flag. The assertions are
+    /// baseline-relative because "plain" files are not universally
+    /// DACL-free: on filesystems whose directories carry non-inheriting
+    /// default ACLs (e.g. the GitHub Windows runners' temp dirs), even a
+    /// fresh file is created with explicit SYSTEM/Administrators/owner ACEs
+    /// — the capture must (and does) record exactly those too. The tests
+    /// grant, not deny: icacls deny masks include SYNCHRONIZE, which locks
+    /// even reads out of the file (repro-verified) — that case must degrade
+    /// honestly as ScanIncomplete, and a degraded workspace has nothing
+    /// left to assert.
     #[test]
     fn explicit_dacls_are_captured_into_the_fingerprint() {
         let (root, _store, workspace) = fixture();
         workspace
             .reconcile_locked("plain pre-state")
             .expect("reconcile");
-        let serialized =
-            serde_json::to_string(&baseline_manifest(&workspace).get("host.txt")).expect("serde");
-        assert!(
-            !serialized.contains("dacl"),
-            "a DACL-free file must not drift: {serialized}"
-        );
+        let baseline = explicit_dacl(&root.path().join("host.txt")).expect("baseline dacl");
+        let baseline_count = baseline.as_ref().map(|d| d.aces.len()).unwrap_or(0);
+        if baseline.is_none() {
+            // Only on an inheriting parent: the fingerprint serializes
+            // without the field at all (the model-level no-drift property
+            // is asserted unconditionally in AC1).
+            let serialized = serde_json::to_string(&baseline_manifest(&workspace).get("host.txt"))
+                .expect("serde");
+            assert!(
+                !serialized.contains("dacl"),
+                "a DACL-free file must not drift: {serialized}"
+            );
+        }
 
         icacls(&[&host(root.path()), "/grant", "Everyone:(W)"]);
         workspace
@@ -761,12 +772,30 @@ mod dacl {
             .expect("reconcile 2");
         let dacl = dacl_of(&baseline_manifest(&workspace).get("host.txt"));
         assert!(!dacl.protected, "a plain grant leaves inheritance intact");
-        assert_eq!(dacl.aces.len(), 1, "exactly one explicit ACE: {dacl:?}");
-        let grant = &dacl.aces[0];
+        assert_eq!(
+            dacl.aces.len(),
+            baseline_count + 1,
+            "exactly one explicit ACE added to the baseline: {dacl:?}"
+        );
+        let grants: Vec<&rewind::model::DaclAce> = dacl
+            .aces
+            .iter()
+            .filter(|ace| ace.sid == "S-1-1-0")
+            .collect();
+        assert_eq!(grants.len(), 1, "exactly one Everyone ACE: {dacl:?}");
+        let grant = grants[0];
         assert_eq!(grant.ace_type, 0, "an allow ACE");
-        assert_eq!(grant.sid, "S-1-1-0", "Everyone, recorded literally");
         assert!(grant.flags & 0x10 == 0, "the inherited bit is stripped");
         assert_ne!(grant.mask, 0, "the granted mask is recorded verbatim");
+        // Every baseline ACE is preserved beside the new grant.
+        if let Some(before) = &baseline {
+            for ace in &before.aces {
+                assert!(
+                    dacl.aces.contains(ace),
+                    "baseline ACE must survive the grant: {ace:?} in {dacl:?}"
+                );
+            }
+        }
     }
 
     /// AC3: a captured DACL change is undone to the exact recorded explicit
@@ -775,6 +804,8 @@ mod dacl {
     #[test]
     fn dacl_changes_are_captured_and_reversible() {
         let (root, _store, workspace) = fixture();
+        let file = root.path().join("host.txt");
+        let baseline = explicit_dacl(&file).expect("baseline dacl");
         let outcome = workspace
             .run_command(&[
                 "icacls".to_owned(),
@@ -792,19 +823,25 @@ mod dacl {
         let post = dacl_of(&post_manifest(&workspace, operation_id).get("host.txt"));
         assert_eq!(
             post.aces.len(),
-            1,
-            "the captured grant is in the post state"
+            baseline.as_ref().map(|d| d.aces.len()).unwrap_or(0) + 1,
+            "exactly the captured grant on top of the baseline"
+        );
+        assert!(
+            post.aces
+                .iter()
+                .any(|ace| ace.sid == "S-1-1-0" && ace.ace_type == 0),
+            "the Everyone grant is in the post state"
         );
 
         undo(&workspace, Some(operation_id), false).expect("undo grant");
-        let restored = explicit_dacl(&root.path().join("host.txt")).expect("live dacl");
-        assert!(
-            restored.is_none(),
-            "undo must restore the DACL-free pre-state: {restored:?}"
+        let restored = explicit_dacl(&file).expect("live dacl");
+        assert_eq!(
+            restored, baseline,
+            "undo must restore the exact recorded pre-state: {restored:?}"
         );
 
         redo(&workspace, Some(operation_id)).expect("redo grant");
-        let redone = explicit_dacl(&root.path().join("host.txt")).expect("live dacl");
+        let redone = explicit_dacl(&file).expect("live dacl");
         assert_eq!(redone.expect("grant restored"), post, "redo is exact");
         assert_eq!(
             fs::read(root.path().join("host.txt")).expect("main content"),
@@ -834,13 +871,15 @@ mod dacl {
         );
 
         undo(&workspace, Some(operation_id), false).expect("undo inheritance removal");
-        let restored = explicit_dacl(&root.path().join("host.txt")).expect("live dacl");
-        let restored = restored.expect("the grant ACE remains recorded");
-        assert!(!restored.protected, "the pre-state was unprotected");
-        assert_eq!(restored.aces.len(), 1, "exactly the recorded grant remains");
+        let restored = explicit_dacl(&file).expect("live dacl");
+        assert_eq!(
+            restored,
+            Some(post.clone()),
+            "undo must restore the exact unprotected pre-state"
+        );
 
         redo(&workspace, Some(operation_id)).expect("redo inheritance removal");
-        let redone = explicit_dacl(&root.path().join("host.txt")).expect("live dacl");
+        let redone = explicit_dacl(&file).expect("live dacl");
         assert_eq!(redone.expect("protected restored"), protected);
     }
 
@@ -870,8 +909,19 @@ mod dacl {
         );
         let live = explicit_dacl(&root.path().join("host.txt"))
             .expect("live dacl")
-            .expect("both grants remain");
-        assert_eq!(live.aces.len(), 2, "both explicit grants survive untouched");
+            .expect("the grants remain");
+        assert!(
+            live.aces
+                .iter()
+                .any(|ace| ace.sid == "S-1-1-0" && ace.ace_type == 0),
+            "the captured Everyone grant survives untouched: {live:?}"
+        );
+        assert!(
+            live.aces
+                .iter()
+                .any(|ace| ace.sid == "S-1-5-32-545" && ace.ace_type == 0),
+            "the external Users grant survives untouched: {live:?}"
+        );
     }
 
     /// AC5: the archive copy of a DACL-carrying quarantined file carries the

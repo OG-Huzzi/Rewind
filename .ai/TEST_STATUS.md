@@ -64,6 +64,14 @@ Empirical findings recorded during testing (behavior, not flakes):
   the testable protected form.
 - icacls *replaces* an existing trustee's grant instead of adding a second
   one; divergence tests grant a second trustee.
+- The GitHub Windows runners' temp dirs carry **non-inheriting default
+  ACLs**: a fresh file there is created with explicit
+  SYSTEM/Administrators/owner ACEs (mask 0x1F01FF) instead of inherited
+  ones. The first CI run's DACL tests failed on
+  count-based assertions written against this host's inheriting parent;
+  the implementation was correct throughout (it captured exactly the
+  explicit ACEs present). The tests are now baseline-relative, which is
+  green on both environments; the contract AC wording was amended to match.
 
 Platform gaps (disclosed, not passing claims): POSIX platforms run only the
 model-level tests (AC1); the DACL variant is Windows-produced only, and the
