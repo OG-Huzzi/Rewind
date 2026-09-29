@@ -12,6 +12,31 @@ pub struct MetadataFingerprint {
     pub readonly: bool,
 }
 
+/// One explicit DACL ACE of a Windows regular file (Phase 5 slice 4). Only
+/// allow (0) and deny (1) ACE types are representable — anything else is a
+/// named scan error, never a guessed parse. `flags` is the ACE's flags with
+/// the system's `INHERITED_ACE` bit stripped: inherited ACEs are
+/// parent-derived and never state. `sid` is the trustee SID in string form,
+/// restored literally without name resolution.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct DaclAce {
+    pub ace_type: u8,
+    pub flags: u8,
+    pub mask: u32,
+    pub sid: String,
+}
+
+/// The recordable state of a Windows regular file's DACL: its explicit ACEs
+/// in ACL order (order is part of access semantics) plus the protected flag.
+/// `protected` with an empty `aces` is the meaningful deny-all state; an
+/// unprotected DACL with no explicit ACEs is `None` on the fingerprint —
+/// there is no explicit state to record.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct DaclFingerprint {
+    pub protected: bool,
+    pub aces: Vec<DaclAce>,
+}
+
 /// State-identity schema version. The architecture defines a state's identity
 /// as a digest of the canonical serialized manifest *and* the manifest
 /// schema version, so any change to fingerprint semantics must produce a
@@ -57,6 +82,16 @@ pub enum Fingerprint {
         /// identity resolved by the existing reconciliation checkpoint.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         streams: BTreeMap<String, String>,
+        /// The file's explicit NTFS DACL state (Phase 5 slice 4, Windows
+        /// only): explicit ACEs plus the protected flag. `None` — skipped
+        /// from serialization — means "no explicit DACL state", so DACL-free
+        /// files keep the byte-identical pre-slice fingerprint form (no
+        /// schema bump, no drift); files with explicit permission state gain
+        /// a strictly stronger state identity resolved by the existing
+        /// reconciliation checkpoint. Inherited ACEs are never recorded
+        /// (parent-derived, not file state).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dacl: Option<DaclFingerprint>,
     },
     Directory {
         manifest_hash: String,
@@ -160,16 +195,24 @@ impl Fingerprint {
                 content_hash,
                 size,
                 streams,
+                dacl,
                 ..
             } => {
-                if streams.is_empty() {
+                let mut text = if streams.is_empty() {
                     format!("REGULAR_FILE(hash={content_hash},size={size})")
                 } else {
                     format!(
                         "REGULAR_FILE(hash={content_hash},size={size},streams={})",
                         streams.len()
                     )
+                };
+                if let Some(dacl) = dacl {
+                    text.push_str(&format!(",dacl={}aces", dacl.aces.len()));
+                    if dacl.protected {
+                        text.push_str("+protected");
+                    }
                 }
+                text
             }
             Self::Directory {
                 manifest_hash,

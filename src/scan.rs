@@ -228,6 +228,232 @@ pub fn stream_spec(path: &Path, name: &str) -> std::ffi::OsString {
     spec
 }
 
+/// Reads a regular file's recordable DACL state (Phase 5 slice 4): the
+/// explicit (non-inherited) ACEs in ACL order plus the protected flag.
+/// Returns `None` when there is no explicit state — a DACL-less object or a
+/// present-but-unprotected DACL with zero explicit ACEs. Every failure mode
+/// is an error, never a `None` guess: an unreadable security descriptor
+/// (including the probe-verified owner-lockout case) and a NULL DACL
+/// (allow-everything — not representable without inversion risk) are named
+/// scan errors. Callers read only leaves already classified as regular
+/// files; reparse points are never resolved here.
+#[cfg(windows)]
+pub fn explicit_dacl(path: &Path) -> crate::error::Result<Option<crate::model::DaclFingerprint>> {
+    dacl_ffi::capture(path)
+}
+
+/// The DACL reader — the crate's sixth minimal FFI site (read-only). The
+/// security descriptor is released on every return path. ACE bodies are
+/// parsed only for the simple allow/deny types whose layout is
+/// `header + mask + SID`; any other type is refused by name (its body
+/// layout differs — parsing it as a simple ACE would corrupt the SID).
+#[cfg(windows)]
+mod dacl_ffi {
+    use std::ffi::c_void;
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+
+    use crate::error::{Result, RewindError};
+    use crate::model::{DaclAce, DaclFingerprint};
+
+    type Dword = u32;
+    type Bool = i32;
+    type PSecurityDescriptor = *mut c_void;
+    type PAcl = *mut c_void;
+    type PSid = *mut c_void;
+
+    const SE_FILE_OBJECT: Dword = 1;
+    const OWNER_SECURITY_INFORMATION: Dword = 0x1;
+    const GROUP_SECURITY_INFORMATION: Dword = 0x2;
+    const DACL_SECURITY_INFORMATION: Dword = 0x4;
+    // SECURITY_DESCRIPTOR control bits.
+    const SE_DACL_PRESENT: u16 = 0x0004;
+    const SE_DACL_PROTECTED: u16 = 0x1000;
+    // ACE header bits and types.
+    const INHERITED_ACE: u8 = 0x10;
+    const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
+    const ACCESS_DENIED_ACE_TYPE: u8 = 1;
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct AclHeader {
+        revision: u8,
+        sbz1: u8,
+        size: u16,
+        ace_count: u16,
+        sbz2: u16,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct AceHeader {
+        ace_type: u8,
+        ace_flags: u8,
+        ace_size: u16,
+    }
+
+    #[link(name = "advapi32")]
+    extern "system" {
+        fn GetNamedSecurityInfoW(
+            object_name: *const u16,
+            object_type: Dword,
+            security_info: Dword,
+            ppsid_owner: *mut PSid,
+            ppsid_group: *mut PSid,
+            pp_dacl: *mut PAcl,
+            pp_sacl: *mut PAcl,
+            pp_security_descriptor: *mut PSecurityDescriptor,
+        ) -> Dword;
+        fn GetSecurityDescriptorControl(
+            sd: PSecurityDescriptor,
+            control: *mut u16,
+            revision: *mut Dword,
+        ) -> Bool;
+        fn ConvertSidToStringSidW(sid: PSid, out: *mut *mut u16) -> Bool;
+        fn LocalFree(handle: *mut c_void) -> *mut c_void;
+    }
+
+    fn wide(path: &Path) -> Vec<u16> {
+        path.as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+
+    fn sid_string(sid: PSid) -> Result<String> {
+        let mut out: *mut u16 = std::ptr::null_mut();
+        let ok = unsafe { ConvertSidToStringSidW(sid, &mut out) };
+        if ok == 0 {
+            return Err(RewindError::ScanIncomplete(format!(
+                "cannot stringify a DACL trustee SID on {}: {}",
+                // The caller's path context is included at the call site.
+                "",
+                std::io::Error::last_os_error()
+            )));
+        }
+        let mut units = 0usize;
+        unsafe {
+            while *out.add(units) != 0 {
+                units += 1;
+            }
+        }
+        let text = String::from_utf16(unsafe { std::slice::from_raw_parts(out, units) })
+            .map_err(|_| RewindError::ScanIncomplete("non-Unicode trustee SID string".to_owned()));
+        unsafe { LocalFree(out as *mut c_void) };
+        text
+    }
+
+    pub fn capture(path: &Path) -> Result<Option<DaclFingerprint>> {
+        let name = wide(path);
+        let mut sd: PSecurityDescriptor = std::ptr::null_mut();
+        let (mut owner, mut group, mut dacl, mut sacl) = (
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        );
+        let info =
+            OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
+        // SAFETY: `name` and the out-pointers are owned for the duration of
+        // the call; `sd` is released on every return path; the call only
+        // reads the object's security descriptor and resolves nothing.
+        let status = unsafe {
+            GetNamedSecurityInfoW(
+                name.as_ptr(),
+                SE_FILE_OBJECT,
+                info,
+                &mut owner,
+                &mut group,
+                &mut dacl,
+                &mut sacl,
+                &mut sd,
+            )
+        };
+        if status != 0 {
+            return Err(RewindError::ScanIncomplete(format!(
+                "cannot read the security descriptor of {}: status {status}: {}",
+                path.display(),
+                std::io::Error::last_os_error()
+            )));
+        }
+        let result = (|| {
+            let mut control: u16 = 0;
+            let mut revision: Dword = 0;
+            let ok = unsafe { GetSecurityDescriptorControl(sd, &mut control, &mut revision) };
+            if ok == 0 {
+                return Err(RewindError::ScanIncomplete(format!(
+                    "cannot read the security descriptor control of {}",
+                    path.display()
+                )));
+            }
+            let present = control & SE_DACL_PRESENT != 0;
+            let protected = control & SE_DACL_PROTECTED != 0;
+            if !present {
+                if dacl.is_null() {
+                    // No DACL at all: the object carries no explicit DACL
+                    // state (the typical non-NTFS / default case).
+                    return Ok(None);
+                }
+                // Control/pointer disagreement is an unmodelable object:
+                // refuse rather than guess which half is true.
+                return Err(RewindError::ScanIncomplete(format!(
+                    "inconsistent DACL state on {} (SE_DACL_PRESENT clear with a DACL pointer)",
+                    path.display()
+                )));
+            }
+            if dacl.is_null() {
+                // A NULL DACL means allow-everything — meaningful state this
+                // record cannot represent without inversion risk. Refuse by
+                // name instead of guessing.
+                return Err(RewindError::ScanIncomplete(format!(
+                    "NULL DACL (allow-everything) on {} is not representable; capture refused",
+                    path.display()
+                )));
+            }
+            let header = unsafe { *(dacl as *const AclHeader) };
+            let mut aces = Vec::new();
+            let mut offset = 8usize; // ACL header
+            for _ in 0..header.ace_count {
+                let base = unsafe { (dacl as *const u8).add(offset) };
+                let ace = unsafe { *(base as *const AceHeader) };
+                if ace.ace_type != ACCESS_ALLOWED_ACE_TYPE && ace.ace_type != ACCESS_DENIED_ACE_TYPE
+                {
+                    return Err(RewindError::ScanIncomplete(format!(
+                        "DACL ACE type {} on {} is not a simple allow/deny ACE; capture refused",
+                        ace.ace_type,
+                        path.display()
+                    )));
+                }
+                if ace.ace_flags & INHERITED_ACE == 0 {
+                    let mask = unsafe { *(base.add(4) as *const u32) };
+                    let sid = sid_string(unsafe { base.add(8) } as PSid).map_err(|error| {
+                        RewindError::ScanIncomplete(format!(
+                            "{} on {}: {error}",
+                            "cannot stringify a DACL trustee SID",
+                            path.display()
+                        ))
+                    })?;
+                    aces.push(DaclAce {
+                        ace_type: ace.ace_type,
+                        flags: ace.ace_flags & !INHERITED_ACE,
+                        mask,
+                        sid,
+                    });
+                }
+                offset += ace.ace_size as usize;
+            }
+            if aces.is_empty() && !protected {
+                // Present, unprotected, no explicit ACEs: the ACL is entirely
+                // parent-derived — nothing to record.
+                return Ok(None);
+            }
+            Ok(Some(DaclFingerprint { protected, aces }))
+        })();
+        unsafe { LocalFree(sd) };
+        result
+    }
+}
+
 /// The named-stream enumerator — the crate's fifth minimal FFI site (the
 /// read side; stream *writes* go through ordinary std file APIs).
 /// `FindFirstStreamW`/`FindNextStreamW` read the object's stream table. The
@@ -650,11 +876,20 @@ fn classify_entry(
                 streams.insert(name, hash);
             }
         }
+        // Explicit NTFS DACL state (Phase 5 slice 4): captured only for
+        // leaves already confirmed regular files — reparse points never get
+        // here. A failed security-descriptor read degrades honestly
+        // (ScanIncomplete); POSIX has no DACL record and always scans None.
+        #[cfg(windows)]
+        let dacl = explicit_dacl(path)?;
+        #[cfg(not(windows))]
+        let dacl: Option<crate::model::DaclFingerprint> = None;
         return Ok(Fingerprint::RegularFile {
             content_hash: hash,
             size: after_metadata.len(),
             metadata: metadata_fingerprint(metadata),
             streams,
+            dacl,
         });
     }
     if file_type.is_symlink() {

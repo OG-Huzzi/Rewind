@@ -8,7 +8,7 @@
 //! isolation — so classification, journaling, quarantine, and post-apply
 //! verification are exercised together.
 
-use rewind::model::{Fingerprint, MetadataFingerprint};
+use rewind::model::{DaclAce, DaclFingerprint, Fingerprint, MetadataFingerprint};
 
 mod common;
 
@@ -285,6 +285,7 @@ fn stream_fingerprints_are_backward_compatible() {
             readonly: false,
         },
         streams: BTreeMap::new(),
+        dacl: None,
     };
     let serialized = serde_json::to_string(&stream_free).expect("serialize");
     assert_eq!(
@@ -318,11 +319,55 @@ fn stream_fingerprints_are_backward_compatible() {
             readonly: false,
         },
         streams,
+        dacl: None,
     };
     let serialized = serde_json::to_string(&carrying).expect("serialize");
     let back: Fingerprint = serde_json::from_str(&serialized).expect("deserialize");
     assert_eq!(back, carrying);
     assert!(carrying.describe().contains("streams=2"));
+
+    // A DACL-carrying fingerprint round-trips through serde, including the
+    // protected-empty (deny-all) state; `describe()` names the record.
+    let protected_empty = Fingerprint::RegularFile {
+        content_hash: "abc".to_owned(),
+        size: 1,
+        metadata: MetadataFingerprint {
+            mode: None,
+            readonly: false,
+        },
+        streams: BTreeMap::new(),
+        dacl: Some(DaclFingerprint {
+            protected: true,
+            aces: Vec::new(),
+        }),
+    };
+    let serialized = serde_json::to_string(&protected_empty).expect("serialize");
+    let back: Fingerprint = serde_json::from_str(&serialized).expect("deserialize");
+    assert_eq!(back, protected_empty);
+    assert!(protected_empty.describe().contains("dacl=0aces+protected"));
+
+    let with_ace = Fingerprint::RegularFile {
+        content_hash: "abc".to_owned(),
+        size: 1,
+        metadata: MetadataFingerprint {
+            mode: None,
+            readonly: false,
+        },
+        streams: BTreeMap::new(),
+        dacl: Some(DaclFingerprint {
+            protected: false,
+            aces: vec![DaclAce {
+                ace_type: 1,
+                flags: 0,
+                mask: 0x0012_0089,
+                sid: "S-1-1-0".to_owned(),
+            }],
+        }),
+    };
+    let serialized = serde_json::to_string(&with_ace).expect("serialize");
+    let back: Fingerprint = serde_json::from_str(&serialized).expect("deserialize");
+    assert_eq!(back, with_ace);
+    assert!(with_ace.describe().contains("dacl=1aces"));
 }
 
 /// The named-stream lifecycle tests run only on Windows: that is the only
@@ -626,6 +671,265 @@ mod streams {
             archived_stream_files > 0,
             "the archive must contain the stream-carrying quarantined file"
         );
+    }
+}
+
+/// The explicit-DACL lifecycle tests run only on Windows: that is the only
+/// platform whose scanner produces the record, and the mechanics were
+/// probe-verified through the implementation APIs on real NTFS before the
+/// contract was written (`.ai/PHASE_5_NTFS_DACL.md` §2). Every test drives
+/// the real capture, undo, and redo machinery.
+#[cfg(windows)]
+mod dacl {
+    use std::fs;
+    use std::path::Path;
+    use std::process::Command;
+
+    use rewind::model::Fingerprint;
+    use rewind::rollback::{redo, undo};
+    use rewind::scan::explicit_dacl;
+    use rewind::workspace::Workspace;
+
+    fn fixture() -> (tempfile::TempDir, tempfile::TempDir, Workspace) {
+        let root = tempfile::tempdir().expect("temporary root");
+        fs::write(root.path().join("host.txt"), b"MAIN").expect("write fixture");
+        let store = tempfile::tempdir().expect("temporary store");
+        let workspace = Workspace::init(root.path(), Some(store.path())).expect("initialize");
+        (root, store, workspace)
+    }
+
+    fn icacls(args: &[&str]) {
+        let status = Command::new("icacls").args(args).status().expect("icacls");
+        assert!(status.success(), "icacls {args:?} failed");
+    }
+
+    fn dacl_of(fingerprint: &Fingerprint) -> rewind::model::DaclFingerprint {
+        match fingerprint {
+            Fingerprint::RegularFile { dacl, .. } => {
+                dacl.clone().expect("fingerprint must record a DACL")
+            }
+            other => panic!("expected a regular file, got {}", other.kind_name()),
+        }
+    }
+
+    fn baseline_manifest(workspace: &Workspace) -> rewind::model::Manifest {
+        workspace
+            .state_manifest(&workspace.baseline_id().expect("baseline"))
+            .expect("baseline manifest")
+    }
+
+    fn post_manifest(workspace: &Workspace, operation_id: i64) -> rewind::model::Manifest {
+        let record = workspace
+            .storage
+            .catalog
+            .operation(operation_id, workspace.id)
+            .expect("operation record");
+        match &record.post_state_id {
+            Some(post_state_id) => workspace
+                .state_manifest(post_state_id)
+                .expect("post manifest"),
+            None => panic!(
+                "operation {operation_id} has no post state; record error: {:?}; status: {:?}",
+                record.error, record.status
+            ),
+        }
+    }
+
+    /// AC2: explicit ACEs (an icacls grant) are captured with their exact
+    /// type, flags, mask, and SID string, with the unprotected control
+    /// flag; a plain file records no DACL at all — its fingerprint
+    /// serializes without the field (no drift). The tests grant, not deny:
+    /// icacls deny masks include SYNCHRONIZE, which locks even reads out of
+    /// the file (repro-verified) — that case must degrade honestly as
+    /// ScanIncomplete, and a degraded workspace has nothing left to assert.
+    #[test]
+    fn explicit_dacls_are_captured_into_the_fingerprint() {
+        let (root, _store, workspace) = fixture();
+        workspace
+            .reconcile_locked("plain pre-state")
+            .expect("reconcile");
+        let serialized =
+            serde_json::to_string(&baseline_manifest(&workspace).get("host.txt")).expect("serde");
+        assert!(
+            !serialized.contains("dacl"),
+            "a DACL-free file must not drift: {serialized}"
+        );
+
+        icacls(&[&host(root.path()), "/grant", "Everyone:(W)"]);
+        workspace
+            .reconcile_locked("grant classification")
+            .expect("reconcile 2");
+        let dacl = dacl_of(&baseline_manifest(&workspace).get("host.txt"));
+        assert!(!dacl.protected, "a plain grant leaves inheritance intact");
+        assert_eq!(dacl.aces.len(), 1, "exactly one explicit ACE: {dacl:?}");
+        let grant = &dacl.aces[0];
+        assert_eq!(grant.ace_type, 0, "an allow ACE");
+        assert_eq!(grant.sid, "S-1-1-0", "Everyone, recorded literally");
+        assert!(grant.flags & 0x10 == 0, "the inherited bit is stripped");
+        assert_ne!(grant.mask, 0, "the granted mask is recorded verbatim");
+    }
+
+    /// AC3: a captured DACL change is undone to the exact recorded explicit
+    /// set and redone to the post-state; the protected (inheritance-removed)
+    /// form round-trips too.
+    #[test]
+    fn dacl_changes_are_captured_and_reversible() {
+        let (root, _store, workspace) = fixture();
+        let outcome = workspace
+            .run_command(&[
+                "icacls".to_owned(),
+                "host.txt".to_owned(),
+                "/grant".to_owned(),
+                "Everyone:(W)".to_owned(),
+            ])
+            .expect("capture grant");
+        assert!(
+            outcome.capture_error.is_none(),
+            "capture error: {:?}",
+            outcome.capture_error
+        );
+        let operation_id = outcome.operation_id.expect("operation id");
+        let post = dacl_of(&post_manifest(&workspace, operation_id).get("host.txt"));
+        assert_eq!(
+            post.aces.len(),
+            1,
+            "the captured grant is in the post state"
+        );
+
+        undo(&workspace, Some(operation_id), false).expect("undo grant");
+        let restored = explicit_dacl(&root.path().join("host.txt")).expect("live dacl");
+        assert!(
+            restored.is_none(),
+            "undo must restore the DACL-free pre-state: {restored:?}"
+        );
+
+        redo(&workspace, Some(operation_id)).expect("redo grant");
+        let redone = explicit_dacl(&root.path().join("host.txt")).expect("live dacl");
+        assert_eq!(redone.expect("grant restored"), post, "redo is exact");
+        assert_eq!(
+            fs::read(root.path().join("host.txt")).expect("main content"),
+            b"MAIN",
+            "content is untouched by DACL-only undo/redo"
+        );
+
+        // The protected form: `/inheritance:d` disables inheritance *and
+        // copies* the inherited ACEs to explicit ones (plain `/inheritance:r`
+        // would delete them, producing the protected-empty deny-all state —
+        // real, but unreadable, so Rewind's capture degrades and there is
+        // nothing left to assert). The whole protected state must undo and
+        // redo exactly.
+        let outcome = workspace
+            .run_command(&[
+                "icacls".to_owned(),
+                "host.txt".to_owned(),
+                "/inheritance:d".to_owned(),
+            ])
+            .expect("capture inheritance removal");
+        let operation_id = outcome.operation_id.expect("operation id");
+        let protected = dacl_of(&post_manifest(&workspace, operation_id).get("host.txt"));
+        assert!(protected.protected, "the protected flag is captured");
+        assert!(
+            !protected.aces.is_empty(),
+            "former inherited ACEs are explicit"
+        );
+
+        undo(&workspace, Some(operation_id), false).expect("undo inheritance removal");
+        let restored = explicit_dacl(&root.path().join("host.txt")).expect("live dacl");
+        let restored = restored.expect("the grant ACE remains recorded");
+        assert!(!restored.protected, "the pre-state was unprotected");
+        assert_eq!(restored.aces.len(), 1, "exactly the recorded grant remains");
+
+        redo(&workspace, Some(operation_id)).expect("redo inheritance removal");
+        let redone = explicit_dacl(&root.path().join("host.txt")).expect("live dacl");
+        assert_eq!(redone.expect("protected restored"), protected);
+    }
+
+    /// AC4: an external DACL modification after capture refuses undo before
+    /// any mutation — the recorded permission state is conflict-checked
+    /// exactly like content.
+    #[test]
+    fn external_dacl_divergence_refuses_undo() {
+        let (root, _store, workspace) = fixture();
+        let outcome = workspace
+            .run_command(&[
+                "icacls".to_owned(),
+                "host.txt".to_owned(),
+                "/grant".to_owned(),
+                "Everyone:(W)".to_owned(),
+            ])
+            .expect("capture grant");
+        let operation_id = outcome.operation_id.expect("operation id");
+
+        // An external writer changes the DACL after the capture: a second
+        // trustee (icacls would *replace* an existing trustee's grant).
+        icacls(&[&host(root.path()), "/grant", "Users:(RD)"]);
+        let refusal = undo(&workspace, Some(operation_id), false);
+        assert!(
+            refusal.is_err(),
+            "undo must refuse when the recorded DACL diverged"
+        );
+        let live = explicit_dacl(&root.path().join("host.txt"))
+            .expect("live dacl")
+            .expect("both grants remain");
+        assert_eq!(live.aces.len(), 2, "both explicit grants survive untouched");
+    }
+
+    /// AC5: the archive copy of a DACL-carrying quarantined file carries the
+    /// same explicit ACE set — `copy_artifact` re-applied it because
+    /// `fs::copy` drops explicit ACEs (probe-verified) — and
+    /// `verify_archive_pair` compared both sides before marking Archived.
+    #[test]
+    fn dacl_carrying_files_archive_faithfully() {
+        let (root, store, workspace) = fixture();
+        let outcome = workspace
+            .run_command(&[
+                "icacls".to_owned(),
+                "host.txt".to_owned(),
+                "/grant".to_owned(),
+                "Everyone:(W)".to_owned(),
+            ])
+            .expect("capture grant");
+        let operation_id = outcome.operation_id.expect("operation id");
+
+        // The quarantined post-state file is the live file right before the
+        // undo; its explicit DACL is what the archive copy must carry.
+        let quarantined_dacl =
+            explicit_dacl(&root.path().join("host.txt")).expect("live dacl pre-undo");
+        assert!(
+            quarantined_dacl.is_some(),
+            "the quarantined file carries a DACL"
+        );
+
+        undo(&workspace, Some(operation_id), false).expect("undo grant");
+        assert!(
+            explicit_dacl(&root.path().join("host.txt"))
+                .expect("live dacl post-undo")
+                .is_none(),
+            "undo restored the DACL-free pre-state"
+        );
+
+        let archive_root = store.path().join("projects");
+        let mut matches = 0;
+        fn walk(dir: &Path, expected: &Option<rewind::model::DaclFingerprint>, sink: &mut usize) {
+            for entry in fs::read_dir(dir).expect("read_dir") {
+                let entry = entry.expect("entry");
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, expected, sink);
+                } else if explicit_dacl(&path).is_ok_and(|live| live == *expected) {
+                    *sink += 1;
+                }
+            }
+        }
+        walk(&archive_root, &quarantined_dacl, &mut matches);
+        assert!(
+            matches > 0,
+            "the archive must contain the quarantined file with its explicit DACL intact"
+        );
+    }
+
+    fn host(root: &Path) -> String {
+        root.join("host.txt").to_string_lossy().into_owned()
     }
 }
 

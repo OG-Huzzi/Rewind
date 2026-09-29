@@ -584,7 +584,11 @@ fn apply_step(
     }
     match desired {
         Fingerprint::Absent => {}
-        Fingerprint::RegularFile { streams, .. } => {
+        Fingerprint::RegularFile {
+            streams,
+            dacl: desired_dacl,
+            ..
+        } => {
             let stage = before_step
                 .staging_path
                 .as_ref()
@@ -621,6 +625,26 @@ fn apply_step(
                 }
             }
             apply_metadata(&target_path, desired)?;
+            // The recorded explicit DACL is applied last: probe-verified to
+            // work on readonly files (no ordering constraint, unlike stream
+            // writes), and the freshly installed file inherits only, so the
+            // recorded explicit set fully replaces whatever the parent
+            // granted. SIDs are restored literally from their recorded
+            // string form — no account resolution, no existence checks.
+            #[cfg(windows)]
+            {
+                if let Some(dacl) = &desired_dacl {
+                    install_dacl(&target_path, dacl)?;
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                if desired_dacl.is_some() {
+                    return Err(RewindError::Unsupported(format!(
+                        "explicit NTFS DACLs cannot be restored on this platform: {path}"
+                    )));
+                }
+            }
         }
         Fingerprint::Directory { .. } => {
             ensure_parent_directories(&workspace.root, &target_path)?;
@@ -801,6 +825,7 @@ fn artifact_matches_fingerprint(path: &Path, expected: &Fingerprint) -> bool {
             content_hash,
             size,
             streams: expected_streams,
+            dacl: expected_dacl,
             ..
         } => {
             if !metadata.is_file() || metadata.len() != *size {
@@ -852,6 +877,29 @@ fn artifact_matches_fingerprint(path: &Path, expected: &Fingerprint) -> bool {
                 // A stream set can never exist off Windows; a foreign
                 // fingerprint claiming one is not matchable here.
                 if !expected_streams.is_empty() {
+                    return false;
+                }
+            }
+            // The explicit DACL is part of the recorded state: the
+            // quarantined object must carry exactly the recorded explicit
+            // ACEs and protected flag (Phase 5 slice 4). An unreadable
+            // descriptor is a mismatch — never an assumed match. Verifying
+            // never resolves a reparse point.
+            #[cfg(windows)]
+            {
+                let live_dacl = match crate::scan::explicit_dacl(path) {
+                    Ok(live) => live,
+                    Err(_) => return false,
+                };
+                if live_dacl != *expected_dacl {
+                    return false;
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                // A DACL record can never exist off Windows; a foreign
+                // fingerprint claiming one is not matchable here.
+                if expected_dacl.is_some() {
                     return false;
                 }
             }
@@ -1017,6 +1065,146 @@ fn install_named_streams(
         })?;
     }
     Ok(())
+}
+
+/// Applies a recorded explicit DACL to a freshly installed regular file
+/// (Phase 5 slice 4). Only ever called on a leaf `verify_mutation_confined`
+/// has just confirmed as a real regular file. The ACL is rebuilt from the
+/// recorded ACEs in recorded order — probe-verified to reproduce the
+/// original SDDL byte-for-byte, with unprotected application re-deriving the
+/// parent's inherited ACEs and protected application leaving only the
+/// recorded set. Trustee SIDs are materialized from their recorded string
+/// form: a well-formed SID string converts even when no account resolves,
+/// so restore is literal, never name-dependent.
+#[cfg(windows)]
+fn install_dacl(target: &Path, dacl: &crate::model::DaclFingerprint) -> Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+
+    const SE_FILE_OBJECT: u32 = 1;
+    const DACL_SECURITY_INFORMATION: u32 = 0x4;
+    const UNPROTECTED_DACL_SECURITY_INFORMATION: u32 = 0x2000_0000;
+    const PROTECTED_DACL_SECURITY_INFORMATION: u32 = 0x8000_0000;
+    const ACL_REVISION: u8 = 2;
+
+    // Each converted SID stays alive until every ACE byte is copied.
+    let mut converted: Vec<PSid> = Vec::with_capacity(dacl.aces.len());
+    let mut body: Vec<u8> = Vec::new();
+    let mut ace_count = 0u16;
+    let result = (|| -> Result<()> {
+        for ace in &dacl.aces {
+            let wide: Vec<u16> = std::ffi::OsStr::new(&ace.sid)
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect();
+            let mut sid: PSid = std::ptr::null_mut();
+            // SAFETY: `wide` outlives the call; the returned SID is
+            // LocalFree'd before this function returns.
+            let ok = unsafe { ConvertStringSidToSidW(wide.as_ptr(), &mut sid) };
+            if ok == 0 || sid.is_null() {
+                return Err(RewindError::Storage(format!(
+                    "recorded DACL trustee SID {} cannot be materialized for {}: {}",
+                    ace.sid,
+                    target.display(),
+                    std::io::Error::last_os_error()
+                )));
+            }
+            converted.push(sid);
+            // SAFETY: `sid` is a valid SID from ConvertStringSidToSidW.
+            let sid_len = unsafe { GetLengthSid(sid) } as usize;
+            // Simple ACE body: [type u8][flags u8][size u16][mask u32][SID].
+            let ace_size = 8 + sid_len;
+            let start = body.len();
+            body.resize(start + ace_size, 0);
+            body[start] = ace.ace_type;
+            body[start + 1] = ace.flags;
+            body[start + 2..start + 4].copy_from_slice(&(ace_size as u16).to_le_bytes());
+            body[start + 4..start + 8].copy_from_slice(&ace.mask.to_le_bytes());
+            // SAFETY: copying `sid_len` bytes out of the converted SID into
+            // the ACE body.
+            body[start + 8..start + ace_size]
+                .copy_from_slice(unsafe { std::slice::from_raw_parts(sid as *const u8, sid_len) });
+            ace_count += 1;
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        for sid in converted {
+            unsafe { LocalFree(sid) };
+        }
+        return Err(error);
+    }
+
+    // The ACL buffer must be 4-aligned (SID SubAuthority fields are read as
+    // aligned u32s): allocate u32 words and write bytes into them, so the
+    // alignment is guaranteed by the allocator rather than assumed.
+    let total = 8 + body.len();
+    let mut acl: Vec<u32> = vec![0; total.div_ceil(4)];
+    acl[0] = ACL_REVISION as u32 | ((total as u32) << 16);
+    acl[1] = ace_count as u32;
+    for (index, word) in body.chunks(4).enumerate() {
+        let mut bytes = [0u8; 4];
+        bytes[..word.len()].copy_from_slice(word);
+        acl[2 + index] = u32::from_le_bytes(bytes);
+    }
+
+    let wide_target: Vec<u16> = target
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let mode = DACL_SECURITY_INFORMATION
+        | if dacl.protected {
+            PROTECTED_DACL_SECURITY_INFORMATION
+        } else {
+            UNPROTECTED_DACL_SECURITY_INFORMATION
+        };
+    // SAFETY: `wide_target` and `acl` are owned and valid for the call; the
+    // call mutates only the target object's DACL.
+    let status = unsafe {
+        SetNamedSecurityInfoW(
+            wide_target.as_ptr(),
+            SE_FILE_OBJECT,
+            mode,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            acl.as_ptr() as *mut std::ffi::c_void,
+            std::ptr::null_mut(),
+        )
+    };
+    for sid in converted {
+        unsafe { LocalFree(sid) };
+    }
+    if status != 0 {
+        return Err(RewindError::Storage(format!(
+            "apply recorded DACL on {}: status {status}: {}",
+            target.display(),
+            std::io::Error::last_os_error()
+        )));
+    }
+    Ok(())
+}
+
+/// The DACL applier — the crate's seventh minimal FFI site (the write side;
+/// capture lives in `scan.rs`). SIDs are converted from their recorded
+/// string form; `GetLengthSid` sizes each ACE body; `SetNamedSecurityInfoW`
+/// applies the rebuilt ACL under the recorded protection flag.
+#[cfg(windows)]
+type PSid = *mut std::ffi::c_void;
+
+#[cfg(windows)]
+extern "system" {
+    fn ConvertStringSidToSidW(string: *const u16, sid: *mut PSid) -> i32;
+    fn GetLengthSid(sid: PSid) -> u32;
+    fn SetNamedSecurityInfoW(
+        object_name: *const u16,
+        object_type: u32,
+        security_info: u32,
+        psid_owner: PSid,
+        psid_group: PSid,
+        p_dacl: *mut std::ffi::c_void,
+        p_sacl: *mut std::ffi::c_void,
+    ) -> u32;
+    fn LocalFree(handle: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
 }
 
 fn apply_metadata(path: &Path, fingerprint: &Fingerprint) -> Result<()> {
@@ -1779,6 +1967,18 @@ fn copy_artifact(source: &Path, destination: &Path) -> Result<()> {
         // durability request; a read-only handle fails with os error 5.
         let file = OpenOptions::new().write(true).open(destination)?;
         file.sync_all()?;
+        // `fs::copy` (CopyFileW) drops the source's explicit DACL ACEs
+        // (probe-verified): re-apply the source's live explicit DACL to the
+        // copy, or the archive would silently hold de-permissioned state.
+        // A failed read or apply fails the archive — never a silently
+        // stripped copy. `verify_archive_pair` still compares both sides
+        // before anything is marked Archived.
+        #[cfg(windows)]
+        {
+            if let Some(dacl) = crate::scan::explicit_dacl(source)? {
+                install_dacl(destination, &dacl)?;
+            }
+        }
     } else {
         return Err(RewindError::Unsupported(format!(
             "cannot archive unsupported quarantine object {}",
@@ -1858,6 +2058,21 @@ pub fn verify_archive_pair(source: &Path, destination: &Path) -> Result<()> {
                         source.display()
                     )));
                 }
+            }
+            // The explicit DACL is recorded state: the archived copy must
+            // carry exactly the quarantined source's explicit ACEs and
+            // protected flag (`copy_artifact` re-applied them because
+            // `fs::copy` drops explicit ACEs, probe-verified) — a
+            // permission-stripping copy can never authorize disposal of the
+            // last surviving copy (Phase 5 slice 4). An unreadable
+            // descriptor fails the verification outright.
+            let source_dacl = crate::scan::explicit_dacl(source)?;
+            let archive_dacl = crate::scan::explicit_dacl(destination)?;
+            if source_dacl != archive_dacl {
+                return Err(RewindError::Storage(format!(
+                    "archive DACL mismatch for {}: {source_dacl:?} vs {archive_dacl:?}",
+                    source.display()
+                )));
             }
         }
     } else if source_metadata.file_type().is_symlink() {

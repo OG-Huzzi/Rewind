@@ -21,6 +21,7 @@ use rewind::workspace::Workspace;
 fn fixture() -> (tempfile::TempDir, tempfile::TempDir, Workspace) {
     let root = tempfile::tempdir().expect("temporary root");
     fs::write(root.path().join("file.txt"), b"CONTENT").expect("seed file");
+    fs::write(root.path().join("granted.txt"), b"GRANTED").expect("seed granted");
     fs::create_dir(root.path().join("nested")).expect("seed dir");
     fs::write(root.path().join("nested").join("inner.txt"), b"INNER").expect("seed inner");
     fs::create_dir_all(root.path().join("deep").join("deeper")).expect("seed deep");
@@ -98,6 +99,30 @@ fn path_scoped_fingerprints_match_the_full_scan() {
 
     #[cfg(windows)]
     {
+        // Explicit NTFS DACLs (Phase 5 slice 4) enter through the platform's
+        // own icacls: the fingerprint of a DACL-carrying file must be
+        // identical through both observation paths. A grant, not a deny —
+        // deny masks include SYNCHRONIZE and would deny Rewind's own read.
+        let target = root.path().join("granted.txt");
+        let output = std::process::Command::new("icacls")
+            .arg(&target)
+            .args(["/grant", "Everyone:(W)"])
+            .output()
+            .expect("run icacls");
+        assert!(
+            output.status.success(),
+            "icacls grant failed: {:?} {}/{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        workspace
+            .reconcile_locked("dacl classification")
+            .expect("reconcile");
+    }
+
+    #[cfg(windows)]
+    {
         // Junctions enter through the platform's own mklink: one live, one
         // dangling (its target never followed or checked for existence).
         // A readonly junction entry cannot be produced with built-in
@@ -150,6 +175,20 @@ fn path_scoped_fingerprints_match_the_full_scan() {
             Fingerprint::RegularFile { streams, .. } => assert_eq!(streams.len(), 2),
             other => panic!(
                 "streamed.txt must be a regular file, got {}",
+                other.kind_name()
+            ),
+        }
+        // DACL-carrying files classify identically too, with the full
+        // explicit ACE record (Phase 5 slice 4, AC6).
+        match manifest.get("granted.txt") {
+            Fingerprint::RegularFile { dacl, .. } => {
+                let dacl = dacl.expect("granted.txt must record its DACL");
+                assert!(!dacl.protected);
+                assert_eq!(dacl.aces.len(), 1);
+                assert_eq!(dacl.aces[0].sid, "S-1-1-0");
+            }
+            other => panic!(
+                "granted.txt must be a regular file, got {}",
                 other.kind_name()
             ),
         }

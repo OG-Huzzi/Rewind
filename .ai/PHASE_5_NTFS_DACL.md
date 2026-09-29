@@ -6,7 +6,11 @@ through the exact APIs the implementation uses** — `GetNamedSecurityInfoW`,
 `SetNamedSecurityInfoW`, `ConvertSidToStringSidW`,
 `ConvertSecurityDescriptorToStringSecurityDescriptorW`,
 `GetSecurityDescriptorControl` — before this contract was written. The probe
-was a scratch tool and is not committed.
+was a scratch tool and is not committed. One amendment during
+implementation (§4): a NULL DACL (`SE_DACL_PRESENT` set with a null
+pointer — allow-everything) is a named `ScanIncomplete` error, not `None`,
+because recording it as "no explicit state" would understate the object's
+actual permission state.
 
 Baseline: `main` at `a4bf08c` (Phase 5 slice 3 CI-verified, runs #49/#50
 green on ubuntu/macOS/Windows).
@@ -120,10 +124,13 @@ explicit state to record and nothing to be unfaithful about. A read that
 - ACE order is the ACL's own order (probe-verified stable); it is part of
   the record because ACE evaluation order is semantics, not presentation.
 - **When is the field `None`?** When the DACL is absent (`SE_DACL_PRESENT`
-  clear / null DACL pointer) or present-but-unprotected with zero explicit
-  ACEs (behaviorally "inherit everything" — nothing to record). A
-  **protected** DACL with zero explicit ACEs is `Some` — that state is
-  "deny all", which is real state and must survive.
+  clear) or present-but-unprotected with zero explicit ACEs (behaviorally
+  "inherit everything" — nothing to record). A **protected** DACL with zero
+  explicit ACEs is `Some` — that state is "deny all", which is real state
+  and must survive. A **NULL DACL** (`SE_DACL_PRESENT` set with a null
+  pointer — allow-everything) is neither: recording it as `None` would
+  claim a fidelity the object does not have, so it is a named scan error
+  (`ScanIncomplete`), never a guessed state.
 - **No drift, no schema bump:** a file without an explicit DACL serializes
   byte-identically to the pre-slice form (the field is skipped), so existing
   workspaces' state ids are unchanged. A file *with* an explicit DACL
