@@ -54,7 +54,7 @@ three CI platforms (ubuntu, macOS) — not merely compiled.
 | Unix domain sockets, character/block devices | POSIX | Remain `UNSUPPORTED`. Sockets are runtime state (nothing meaningful to restore); device nodes require privileges and are machine state, not workspace state. Scan descriptors made precise (`UNIX_SOCKET`, `CHARACTER_DEVICE`, `BLOCK_DEVICE`) so refusals name what was found. |
 | Named pipes as workspace objects | Windows | N/A — NTFS has no FIFO filesystem objects; the scanner never produces the new fingerprint. A manifest *containing* `NamedPipe` (foreign store) is refused at materialization with an explicit unsupported error rather than guessed at. |
 | Windows junctions / other reparse points | Windows | Remain `UNSUPPORTED` (existing safety decision, unchanged). **Amended 2026-09 (slice 2, `.ai/PHASE_5_WINDOWS_JUNCTIONS.md`): junctions are now first-class literal-leaf objects — see the matrix in §3.** |
-| Extended attributes, ACLs, alternate data streams | all | Deferred. Recording them without restoring them faithfully would claim metadata support that does not exist. **Amended 2026-09 (slice 3, `.ai/PHASE_5_ALTERNATE_DATA_STREAMS.md`): named NTFS streams (ADS) on regular files are now supported — see the matrix in §3; xattrs/ACLs remain deferred.** |
+| Extended attributes, ACLs, alternate data streams | all | Deferred. Recording them without restoring them faithfully would claim metadata support that does not exist. **Amended 2026-09 (slice 3, `.ai/PHASE_5_ALTERNATE_DATA_STREAMS.md`): named NTFS streams (ADS) on regular files are now supported — see the matrix in §3. Amended 2026-09 (slice 4, `.ai/PHASE_5_NTFS_DACL.md`): explicit NTFS DACL ACEs on regular files are now supported — see the matrix in §3; xattrs remain deferred (no POSIX probe host — recorded blocker), POSIX ACL models remain deferred.** |
 | Sparse files, file flags (chflags), ownership (uid/gid) | POSIX | Deferred; ownership restoration in particular would require privilege assumptions CI cannot verify. |
 
 ## 3. Capability matrix (object types × platforms)
@@ -65,7 +65,7 @@ on that platform.
 
 | Object | Linux | macOS | Windows | Notes |
 |---|---|---|---|---|
-| Regular file | supported | supported | supported | content in CAS, mode restored on POSIX; named NTFS streams (ADS) recorded and restored on Windows (slice 3) |
+| Regular file | supported | supported | supported | content in CAS, mode restored on POSIX; named NTFS streams (ADS) recorded and restored on Windows (slice 3); explicit NTFS DACL ACEs + protected flag recorded and restored on Windows (slice 4) |
 | Directory | supported | supported | supported | |
 | Symlink (inside-root target) | supported | supported | supported | Windows flavor from reparse data |
 | Symlink (escaping / unknown target) | recorded, restore refused | recorded, restore refused | recorded, restore refused | never followed |

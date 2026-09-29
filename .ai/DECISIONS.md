@@ -506,3 +506,52 @@ first rescan; directory-attached streams remain documented non-state (like
 timestamps); enumeration failures degrade honestly; non-`$DATA` stream types
 refuse as scan errors; POSIX restore of a foreign stream-carrying
 fingerprint is an explicit unsupported error.
+
+## ADR-021: Explicit NTFS DACL ACEs are part of the regular-file fingerprint
+
+### Context
+A file's explicit permission ACEs (`icacls` grant/deny, and the
+protected/inheritance control flag) were invisible to state identity: undo
+restored a file from staged content alone and silently dropped recorded
+permission state. The Phase 5.4 audit probed the host (Windows 11, NTFS,
+non-admin) through the exact implementation APIs and found: explicit-ACE
+rebuild + `SetNamedSecurityInfoW(UNPROTECTED)` reproduces the SDDL
+byte-identically (inherited ACEs re-derive from the parent); the protected
+flag round-trips; `fs::rename` preserves the DACL (quarantine safe);
+`fs::copy` DROPS explicit ACEs; a protected DACL can lock out even the
+owner, so security reads can fail on scannable files. POSIX xattrs remain
+deferred — no POSIX host exists to probe against (no WSL, no Docker), and
+the phase gate forbids implementing blind.
+
+### Decision
+Record the explicit (non-inherited) DACL ACEs plus the protected flag of
+regular files (Windows only) as `dacl: Option<DaclFingerprint>` on
+`Fingerprint::RegularFile`, skipped from serialization when `None` so
+existing fingerprints stay byte-identical (no schema bump, no drift). ACEs
+are recorded as (type, flags-with-inherited-bit-stripped, mask, SID string)
+in ACL order; non-simple ACE types are named scan errors; SIDs are restored
+literally without name resolution. Restoration rebuilds the ACL and applies
+it after content install and confinement verification (readonly does not
+block it — probe-verified). Archive copies re-apply the source's live
+explicit DACL because `fs::copy` drops it, and archive verification
+compares explicit-ACE sets. Directory DACLs, owner/group, and SACL are
+deferred. Contract: `.ai/PHASE_5_NTFS_DACL.md`.
+
+### Alternatives
+Record the full SDDL string (fingerprint becomes parent-path-dependent
+through inherited ACEs — rejected). Record a hash only (restoration
+impossible — a fidelity lie). Refuse DACL-carrying files as unsupported
+(re-poisons ordinary Windows workspaces; silent loss is worse). Restore via
+SDDL string conversion (ConvertStringSecurityDescriptorToSecurityDescriptor
+is an extra parser for no gain — structured ACE records are exact).
+POSIX xattrs first (no local probe host; blocked by the phase gate).
+
+### Consequences
+State identity for files with explicit permission state becomes strictly
+stronger after the first rescan, resolved by the existing reconciliation
+checkpoint. Security-descriptor read failures degrade honestly
+(`ScanIncomplete`) — including the probe-verified owner-lockout case.
+Inherited-ACE drift is explicitly non-state (parent-derived) and never
+fails a comparison. Non-NTFS volumes: a NULL DACL reads as `None`; a failed
+read degrades. Off-Windows, a foreign `dacl` record refuses restoration and
+never matches a quarantined artifact.
