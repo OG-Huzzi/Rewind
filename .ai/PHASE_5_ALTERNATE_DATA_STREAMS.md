@@ -4,7 +4,9 @@ Status: **IMPLEMENTED** (this slice, Phase 5.3). The mechanics below were
 **probe-verified against a real NTFS volume before this contract was
 written**; the probe example was a scratch tool and is not committed.
 Local gates (fmt, check, clippy `-D warnings`, full suite 162/0 on
-Windows) are green; CI verification is recorded in `.ai/TEST_STATUS.md`.
+Windows) are green; **CI run #49 on `1721503` is green on ubuntu, macOS,
+and Windows** (the first push's POSIX clippy `unused_mut` was fixed by
+`1721503`; see `.ai/TEST_STATUS.md`).
 One amendment during implementation: stream restoration copies from the
 verified CAS blob in bounded chunks instead of `read_bytes` (no stream
 blob is ever loaded whole into memory — §5 step 4 reflects this).

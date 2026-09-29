@@ -58,7 +58,15 @@ parallel suite load on the Windows host ("tree creation was not captured")
 and passed 3/3 in isolation plus the two full re-runs; recorded as a host
 load flake, not addressed by changing the test.
 
-CI: pending at slice-commit time; recorded below after verification.
+CI (GitHub Actions, `OG-Huzzi/Rewind`, fmt/check/clippy -D warnings/test
+on ubuntu-latest, macos-latest, windows-latest): run #48 on `1cfac81`
+failed on ubuntu+macOS clippy (`variable does not need to be mutable` —
+the `streams` map is mutated only by the cfg(windows) enumeration;
+windows-latest passed in full on `1cfac81`, compile + clippy + all tests
+including the stream lifecycle suite). Fixed by `1721503`
+(cfg_attr(not(windows), allow(unused_mut)), the slice-2 pattern), and
+**run #49 on `1721503` is green on ubuntu, macOS, and windows** — the
+slice's CI verification (run id 36582533573).
 
 ## Phase 5 slice 2 (Windows junctions as first-class objects)
 

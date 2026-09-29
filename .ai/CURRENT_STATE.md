@@ -2,8 +2,9 @@
 
 Status: Phase 5 slice 3 — **Windows alternate data streams (ADS) as part of
 the regular-file fingerprint — implemented** (contract
-`.ai/PHASE_5_ALTERNATE_DATA_STREAMS.md`, ADR-020; local gates green, CI
-recorded in TEST_STATUS.md). Phase 5 slice 2 — **Windows junctions as
+`.ai/PHASE_5_ALTERNATE_DATA_STREAMS.md`, ADR-020; local gates green and
+CI run #49 on `1721503` green on ubuntu/macOS/Windows — see
+TEST_STATUS.md). Phase 5 slice 2 — **Windows junctions as
 first-class objects — implemented and CI-verified** (contract
 `.ai/PHASE_5_WINDOWS_JUNCTIONS.md`,
 ADR-019; commits `33238bc` + `0f96706`; CI run #46 green on
