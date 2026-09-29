@@ -65,13 +65,16 @@ Empirical findings recorded during testing (behavior, not flakes):
 - icacls *replaces* an existing trustee's grant instead of adding a second
   one; divergence tests grant a second trustee.
 - The GitHub Windows runners' temp dirs carry **non-inheriting default
-  ACLs**: a fresh file there is created with explicit
-  SYSTEM/Administrators/owner ACEs (mask 0x1F01FF) instead of inherited
-  ones. The first CI run's DACL tests failed on
-  count-based assertions written against this host's inheriting parent;
+  ACLs**, and their `icacls /grant` also **converts the previously
+  inherited ACEs into explicit copies** (locally it does not — another
+  icacls behavior difference). Two CI rounds failed on count- and
+  delta-based assertions written against this host's icacls semantics;
   the implementation was correct throughout (it captured exactly the
-  explicit ACEs present). The tests are now baseline-relative, which is
-  green on both environments; the contract AC wording was amended to match.
+  explicit ACEs present in both environments). The tests now assert the
+  environment-agnostic contract — the recorded explicit set equals the
+  live set, contains the grant, and undo/redo restore recorded states
+  exactly — green locally and on runners; the contract AC wording was
+  amended to match.
 
 Platform gaps (disclosed, not passing claims): POSIX platforms run only the
 model-level tests (AC1); the DACL variant is Windows-produced only, and the

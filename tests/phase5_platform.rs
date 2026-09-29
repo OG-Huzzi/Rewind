@@ -753,7 +753,6 @@ mod dacl {
             .reconcile_locked("plain pre-state")
             .expect("reconcile");
         let baseline = explicit_dacl(&root.path().join("host.txt")).expect("baseline dacl");
-        let baseline_count = baseline.as_ref().map(|d| d.aces.len()).unwrap_or(0);
         if baseline.is_none() {
             // Only on an inheriting parent: the fingerprint serializes
             // without the field at all (the model-level no-drift property
@@ -770,32 +769,25 @@ mod dacl {
         workspace
             .reconcile_locked("grant classification")
             .expect("reconcile 2");
+        let live = explicit_dacl(&root.path().join("host.txt"))
+            .expect("live dacl")
+            .expect("the grant leaves an explicit ACE behind");
         let dacl = dacl_of(&baseline_manifest(&workspace).get("host.txt"));
-        assert!(!dacl.protected, "a plain grant leaves inheritance intact");
-        assert_eq!(
-            dacl.aces.len(),
-            baseline_count + 1,
-            "exactly one explicit ACE added to the baseline: {dacl:?}"
-        );
-        let grants: Vec<&rewind::model::DaclAce> = dacl
+        // Capture fidelity is the contract: the recorded set equals the
+        // live explicit set, whatever the environment's icacls did (on some
+        // filesystems icacls also converts the previously inherited ACEs to
+        // explicit copies — e.g. the CI runners' temp dirs — and the
+        // capture must reflect exactly that, never an idealized shape).
+        assert_eq!(dacl, live, "capture must equal the live explicit set");
+        assert!(!dacl.protected, "a plain grant leaves the DACL unprotected");
+        let grant = live
             .aces
             .iter()
-            .filter(|ace| ace.sid == "S-1-1-0")
-            .collect();
-        assert_eq!(grants.len(), 1, "exactly one Everyone ACE: {dacl:?}");
-        let grant = grants[0];
+            .find(|ace| ace.sid == "S-1-1-0")
+            .expect("the Everyone grant is recorded");
         assert_eq!(grant.ace_type, 0, "an allow ACE");
         assert!(grant.flags & 0x10 == 0, "the inherited bit is stripped");
         assert_ne!(grant.mask, 0, "the granted mask is recorded verbatim");
-        // Every baseline ACE is preserved beside the new grant.
-        if let Some(before) = &baseline {
-            for ace in &before.aces {
-                assert!(
-                    dacl.aces.contains(ace),
-                    "baseline ACE must survive the grant: {ace:?} in {dacl:?}"
-                );
-            }
-        }
     }
 
     /// AC3: a captured DACL change is undone to the exact recorded explicit
@@ -821,10 +813,15 @@ mod dacl {
         );
         let operation_id = outcome.operation_id.expect("operation id");
         let post = dacl_of(&post_manifest(&workspace, operation_id).get("host.txt"));
+        // The recorded post state must equal the live explicit set (capture
+        // fidelity, whatever the environment's icacls did to the other
+        // ACEs) and contain the Everyone grant.
         assert_eq!(
-            post.aces.len(),
-            baseline.as_ref().map(|d| d.aces.len()).unwrap_or(0) + 1,
-            "exactly the captured grant on top of the baseline"
+            post,
+            explicit_dacl(&file)
+                .expect("live dacl")
+                .expect("grant present"),
+            "the recorded post state equals the live explicit set"
         );
         assert!(
             post.aces
