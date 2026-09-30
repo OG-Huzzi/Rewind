@@ -31,7 +31,9 @@ deterministically:
 
 Local evidence: the two reworked binaries pass 3 consecutive runs each;
 the full suite passed twice consecutively (166/0), with fmt/check/clippy
-`-D warnings` green. CI: recorded below after verification.
+`-D warnings` green. CI: **run on `899a667` green on ubuntu, macOS, and
+windows on the first attempt — no re-run needed** — including both
+previously-flaky suites on the loaded runners.
 
 ## Phase 5 slice 4 (Windows NTFS DACLs — explicit ACEs)
 
