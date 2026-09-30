@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Phase 5 close-out (`.ai/PHASE_5_CLOSEOUT.md`): Phase 5 signed off
+  (`.ai/PHASE_5_VERIFICATION_REPORT.md`) with the capability matrix final;
+  the three CI timing flakes root-caused and fixed deterministically
+  (`REWIND_HOOK_LEASE_RETRY_MS` tuning knob, claim barrier, spawn
+  sentinel, capture diagnostics) — no assertion weakened.
 - Phase 5 slices 1–4 (platform expansion, contracts in `.ai/PHASE_5_*.md`):
   POSIX named pipes (FIFOs) as first-class objects (ADR-017); Windows
   junctions as first-class literal-leaf objects restored from recorded

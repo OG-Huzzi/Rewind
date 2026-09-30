@@ -1,6 +1,10 @@
 # Current Implementation State
 
-Status: Phase 5 slice 4 — **explicit NTFS DACL ACEs as part of the
+Status: **Phase 5 closed** (signoff `.ai/PHASE_5_VERIFICATION_REPORT.md`;
+close-out contract `.ai/PHASE_5_CLOSEOUT.md`) — four platform-expansion
+slices delivered and CI-verified, the capability matrix final, all
+remaining items deferred with recorded blockers, and the three CI timing
+flakes root-caused and fixed deterministically. Slice 4 — **explicit NTFS DACL ACEs as part of the
 regular-file fingerprint — implemented** (contract
 `.ai/PHASE_5_NTFS_DACL.md`, ADR-021; local gates green — 166/0 — CI
 recorded in TEST_STATUS.md). Phase 5 slice 3 — **Windows alternate data

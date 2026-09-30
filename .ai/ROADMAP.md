@@ -89,9 +89,19 @@ narrowed to the affected path (ADR-018) after profiling showed per-step full
 scans were 82-84% of undo time with quadratic scaling — 400-file undo
 15.8 min → 1.25 min, identical safety anchors (`.ai/PHASE_ROLLBACK_PERF.md`).
 
-## 7. Current gate
+## 7. Phase 5 close-out and current gate
 
-Phases 1-4 are implemented and CI-verified. Phase 5's contract
-(`.ai/PHASE_5_PLATFORM_EXPANSION.md`) governs the object-expansion slice;
-further expansion (new object kinds, metadata classes, or platforms) requires
-a contract amendment with a capability-matrix update before implementation.
+Phase 5 is **closed** (signoff: `.ai/PHASE_5_VERIFICATION_REPORT.md`): four
+capability slices delivered and CI-verified, the capability matrix is final
+for this phase, and every remaining metadata/platform item is explicitly
+deferred with its recorded blocker. The close-out phase
+(`.ai/PHASE_5_CLOSEOUT.md`) also root-caused the three CI timing flakes and
+fixed them deterministically (hook lease-retry tuning knob, claim barrier,
+spawn sentinel, capture diagnostics) without weakening any assertion.
+
+The next planned phase is **ecosystem recipes** (the deferred ADR-016 work),
+followed by release engineering. Further capability expansion (new object
+kinds, metadata classes, or platforms) remains possible but requires a new
+contract amendment with a capability-matrix update before implementation,
+and — for anything not probeable in the working environment — a real probe
+host first.

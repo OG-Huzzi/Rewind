@@ -10,8 +10,13 @@
 - [x] Implement journal recovery and doctor diagnostics.
 - [x] Add shell hook boundary adapters without introducing a daemon.
 - [x] Add initial real-filesystem, adversarial, security, and conflict tests.
-- [ ] Complete the full 38-scenario matrix on every supported platform.
-- [ ] Run native MSVC, Linux, and macOS verification where toolchains exist.
+- [x] Complete cross-platform verification. (Closed at Phase 5 close-out:
+      CI runs fmt/check/clippy(-D warnings)/test on ubuntu-latest,
+      macos-latest, and windows-latest (MSVC) for every push, and the
+      platform-specific suites execute natively on each runner; the
+      historical "38-scenario matrix" and "native MSVC/Linux/macOS where
+      toolchains exist" items are superseded by this standing coverage —
+      see `.ai/PHASE_5_VERIFICATION_REPORT.md` §3.)
 
 # Phase 3 TODO
 

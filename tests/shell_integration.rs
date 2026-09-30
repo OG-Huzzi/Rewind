@@ -942,6 +942,14 @@ fn rapid_commands_keep_command_identity(shell: &str) {
             "printf a > a.txt",
             "sh -c 'printf b > b.txt; exit 9'",
             "sh -c 'printf c > c.txt; exit 5'",
+            // Sentinel: the post-hook of the LAST real command is spawned by
+            // the prompt cycle that follows it, and a buffered interactive
+            // shell delivers the end-of-input cycle unreliably
+            // (probe-verified — the Phase 5 close-out contract §2). A
+            // trailing command gives c.txt's spawn the same guaranteed
+            // following-command cycle that a.txt and b.txt always had; the
+            // sentinel's own boundary joins the tolerated extras below.
+            "true",
         ],
         root.path(),
         &[
@@ -952,6 +960,12 @@ fn rapid_commands_keep_command_identity(shell: &str) {
                 "REWIND_SESSION_ID",
                 format!("rapid-{shell}-{}", std::process::id()),
             ),
+            // In-flight posts must not bypass under runner load: the
+            // identity assertions below are load-independent by design, so
+            // the spawned hooks get a generous lease-retry budget (the
+            // bypass fallback itself is verified against the default by the
+            // boundary suite).
+            ("REWIND_HOOK_LEASE_RETRY_MS", "60000".to_string()),
         ],
         &root.path().join(format!("{shell}-rapid-stderr.log")),
     );
@@ -1027,15 +1041,28 @@ fn rapid_commands_keep_command_identity(shell: &str) {
             .iter()
             .any(|(token, _)| row.command.contains(token))
     }) {
+        let is_exit = row.command == "exit" || row.command.starts_with("exit ");
+        let is_sentinel = row.command == "true" || row.command.starts_with("true ");
         assert!(
-            row.command == "exit" || row.command.starts_with("exit "),
+            is_exit || is_sentinel,
             "an unexpected boundary was fabricated: {:?}",
             row.command
         );
-        assert!(
-            !row.consumed,
-            "the trailing exit line can never be accounted for"
-        );
+        if is_exit {
+            assert!(
+                !row.consumed,
+                "the trailing exit line can never be accounted for"
+            );
+        } else {
+            // The sentinel's post-hook may or may not have spawned before
+            // the shell exited; if it ran, it can only have observed the
+            // sentinel's own successful command.
+            assert_eq!(
+                row.exit_code,
+                if row.consumed { Some(0) } else { None },
+                "the sentinel boundary may only carry its own command's status"
+            );
+        }
     }
 
     // Provenance (unconditional): no strong operation may be fabricated, and
@@ -1064,7 +1091,9 @@ fn rapid_commands_keep_command_identity(shell: &str) {
         }
     }
 
-    if observation_count(&workspace) == expected.len() {
+    if observation_count(&workspace) >= expected.len() {
+        // All expected commands observed (possibly plus the sentinel's own
+        // observation, when its spawn cycle fired before the shell exited).
         assert_eq!(condition(&workspace), WorkspaceCondition::Healthy);
         return;
     }

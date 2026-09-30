@@ -88,7 +88,11 @@ fn capture_tree_creation(fixture: &mut Fixture, files: usize, nested: bool) -> i
         .workspace
         .run_command(&argv)
         .expect("capture tree creation");
-    assert!(outcome.captured, "tree creation was not captured");
+    assert!(
+        outcome.captured,
+        "tree creation was not captured: capture_error={:?}, exit_code={:?},          operation_id={:?}",
+        outcome.capture_error, outcome.exit_code, outcome.operation_id
+    );
     outcome.operation_id.expect("creation operation id")
 }
 

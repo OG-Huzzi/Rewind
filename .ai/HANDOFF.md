@@ -1,5 +1,14 @@
 # Phase 3 Implementation Handoff
 
+**Close-out invariants (do not regress):** `HOOK_LEASE_RETRY` is
+env-tunable via `REWIND_HOOK_LEASE_RETRY_MS` (default 2000 ms, clamped to
+600000) — a starvation-avoidance tuning knob, never a wall-time promise;
+the bypass fallback on budget exhaustion is load-bearing and covered by
+`post_during_writer_activity_gates_durably_and_leaves_others_pending` against
+the default. The overlap test's claim barrier and the rapid test's spawn
+sentinel are deterministic synchronization — do not replace them with
+sleeps, and do not "fix" their assertions.
+
 **Phase 5 slice 4 DACL invariants (do not regress):** a regular file's
 explicit DACL (`dacl: Option<DaclFingerprint>` — `None`-skipped, DACL-free
 fingerprints must stay byte-identical) records only explicit

@@ -111,8 +111,19 @@ fn post_hook(store: &Path, root: &Path, boundary: &str, exit_code: i32) -> std::
 
 /// Starts a real background post-hook process (the shape the shell
 /// integration uses) so that several hooks can be in flight at once.
-fn spawn_post(store: &Path, root: &Path, boundary: &str, exit_code: i32) -> Child {
-    Command::new(rewind_bin())
+/// `extra_env` exists for the overlap test, whose identity assertions must
+/// not race the hook's production lease-retry budget: it gives the spawned
+/// hooks a generous `REWIND_HOOK_LEASE_RETRY_MS` so a slow disk cannot
+/// convert an in-flight hook into the (separately tested) bypass path.
+fn spawn_post_with_env(
+    store: &Path,
+    root: &Path,
+    boundary: &str,
+    exit_code: i32,
+    extra_env: &[(&str, String)],
+) -> Child {
+    let mut command = Command::new(rewind_bin());
+    command
         .args([
             "hook",
             "post",
@@ -125,9 +136,11 @@ fn spawn_post(store: &Path, root: &Path, boundary: &str, exit_code: i32) -> Chil
         .env("REWIND_HOME", store.to_string_lossy().into_owned())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn post hook")
+        .stderr(Stdio::null());
+    for (key, value) in extra_env {
+        command.env(key, value);
+    }
+    command.spawn().expect("spawn post hook")
 }
 fn wait_for_child(child: &mut Child, limit: Duration) -> i32 {
     let started = Instant::now();
@@ -461,14 +474,42 @@ fn overlapping_background_posts_keep_identity() {
     assert_eq!(ids.len(), 3);
 
     let lease = WorkspaceLease::acquire(&workspace, true).expect("hold writer lease as a barrier");
+    let retry_env = [(
+        "REWIND_HOOK_LEASE_RETRY_MS",
+        // Far above any plausible serialized-bookkeeping time on a slow
+        // runner: a hook that misses this is not starving, it is gone.
+        "60000".to_owned(),
+    )];
     let mut children: Vec<Child> = ids
         .iter()
         .zip(plan.iter())
-        .map(|(id, (_, exit_code))| spawn_post(store.path(), root.path(), id, *exit_code))
+        .map(|(id, (_, exit_code))| {
+            spawn_post_with_env(store.path(), root.path(), id, *exit_code, &retry_env)
+        })
         .collect();
-    // Every hook is now running and blocked on the lease: overlap is real,
-    // not a race window.
-    std::thread::sleep(Duration::from_millis(500));
+    // Deterministic claim barrier: `hook_post` claims its boundary
+    // (`finish_boundary`) *before* waiting for the lease, so a claimed row
+    // proves the hook booted, is real, and is blocked at the lease. Poll
+    // for all three claims instead of assuming a sleep suffices; the lease
+    // stays held throughout, so overlap is a verified fact, not a race
+    // window.
+    let barrier_deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let claimed = boundaries(&workspace)
+            .iter()
+            .filter(|row| ids.iter().any(|id| &row.id == id))
+            .filter(|row| row.consumed)
+            .count();
+        if claimed == ids.len() {
+            break;
+        }
+        assert!(
+            Instant::now() < barrier_deadline,
+            "the spawned hooks must claim their boundaries while the lease              is held; claimed {claimed} of {}",
+            ids.len()
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
     drop(lease);
 
     for child in &mut children {

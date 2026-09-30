@@ -33,7 +33,26 @@ const HOOK_SCAN_DEADLINE_MS: u64 = 50;
 /// typing makes consecutive background hooks overlap; the holder releases
 /// within milliseconds, so a short retry avoids spurious reconciliation
 /// gates while still failing closed against genuinely long writers.
-const HOOK_LEASE_RETRY: Duration = Duration::from_millis(2000);
+///
+/// Tuning knob: `REWIND_HOOK_LEASE_RETRY_MS` overrides the value per
+/// process for environments whose disks make the serialized hook
+/// bookkeeping slower than the default assumes (the Phase 5 close-out
+/// contract documents the runner evidence). The override is clamped to
+/// 0–600000 ms and falls back to the default when absent or malformed;
+/// the fallback behavior itself is unchanged — an exhausted budget still
+/// produces the durable bypass marker, exactly as the dedicated
+/// starvation test verifies against the default.
+const HOOK_LEASE_RETRY_ENV: &str = "REWIND_HOOK_LEASE_RETRY_MS";
+const HOOK_LEASE_RETRY_DEFAULT_MS: u64 = 2000;
+const HOOK_LEASE_RETRY_MAX_MS: u64 = 600_000;
+
+fn hook_lease_retry() -> Duration {
+    let parsed = std::env::var(HOOK_LEASE_RETRY_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|milliseconds| *milliseconds <= HOOK_LEASE_RETRY_MAX_MS);
+    Duration::from_millis(parsed.unwrap_or(HOOK_LEASE_RETRY_DEFAULT_MS))
+}
 
 #[derive(Debug, Parser)]
 #[command(
@@ -1110,7 +1129,7 @@ fn lease_with_retry(workspace: &Workspace) -> Result<Option<WorkspaceLease>> {
             Err(RewindError::LockUnavailable(_)) => {}
             Err(error) => return Err(error),
         }
-        if started.elapsed() >= HOOK_LEASE_RETRY {
+        if started.elapsed() >= hook_lease_retry() {
             return Ok(None);
         }
         std::thread::sleep(Duration::from_millis(100));

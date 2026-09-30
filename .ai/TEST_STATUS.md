@@ -1,7 +1,37 @@
 # Phase 1 Test Status
 
-Status after Phase 5 slice 4 (Windows NTFS DACLs). Newer records
+Status after the Phase 5 close-out (CI stabilization). Newer records
 are at the top; earlier phase records are preserved below.
+
+## Phase 5 close-out / CI stabilization
+
+Contract: `.ai/PHASE_5_CLOSEOUT.md` (root causes §2, changes §3). The
+three timing flakes observed during Phase 5 were root-caused and fixed
+deterministically:
+
+- `boundary_correlation::overlapping_background_posts_keep_identity` —
+  the hook's 2 s lease-retry budget expired under runner load while peer
+  hooks serialized fsync-heavy bookkeeping; the test now gives its spawned
+  hooks `REWIND_HOOK_LEASE_RETRY_MS=60000` and replaces the fixed 500 ms
+  sleep with a claim barrier (hold lease → poll until all three hooks have
+  claimed → drop), making overlap a verified fact. The bypass fallback
+  itself stays covered against the default budget by
+  `post_during_writer_activity_gates_durably_and_leaves_others_pending`.
+- `shell_integration::rapid_commands_keep_command_identity` — the spawn of
+  the last real command's post-hook depended on a PROMPT_COMMAND cycle at
+  end of input, which buffered interactive bash delivers unreliably
+  (probe: zero cycles for fully buffered input). A trailing sentinel
+  command now guarantees the spawn cycle; the shell env sets
+  `REWIND_HOOK_LEASE_RETRY_MS=60000`; the sentinel's boundary joins the
+  tolerated extras; the Healthy branch accepts `>= expected.len()`
+  observations for the sentinel's own possible observation.
+- `rollback_tree::capture_tree_creation` — diagnostics only: the capture
+  assertion now surfaces `capture_error`/exit code (no scanner change
+  without a reproduced, diagnosed failure).
+
+Local evidence: the two reworked binaries pass 3 consecutive runs each;
+the full suite passed twice consecutively (166/0), with fmt/check/clippy
+`-D warnings` green. CI: recorded below after verification.
 
 ## Phase 5 slice 4 (Windows NTFS DACLs — explicit ACEs)
 

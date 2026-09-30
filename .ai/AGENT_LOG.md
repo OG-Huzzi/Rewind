@@ -1,5 +1,21 @@
 # Agent Log
 
+## Phase 5 close-out / CI stabilization — executed
+
+- Contract `.ai/PHASE_5_CLOSEOUT.md` committed (`8617948`) before code.
+- Root causes: (1) overlap test lost a hook to the 2 s lease-retry budget
+  under runner load (claimed boundary + bypass marker + exit 0, no
+  operation); (2) the rapid test's last post-hook spawn depended on an
+  end-of-input PROMPT_COMMAND cycle that buffered interactive bash
+  delivers unreliably (probe: 0 cycles); (3) rollback_tree's captured
+  flag swallowed capture_error.
+- Fixes: `REWIND_HOOK_LEASE_RETRY_MS` tuning knob (default unchanged;
+  bypass fallback unchanged and still covered); claim barrier replaces
+  the sleep; trailing sentinel command guarantees the spawn; assertion
+  diagnostics. No assertion weakened anywhere.
+- Signoff: `.ai/PHASE_5_VERIFICATION_REPORT.md` — Phase 5 CLOSED with the
+  final capability matrix state; recommended next phase: ecosystem
+  recipes (ADR-016 deferral), then release engineering.
 ## Phase 5.4 execution (slice 4: explicit NTFS DACL ACEs) — implemented
 
 - User approved the Windows-DACL candidate after the audit below.
