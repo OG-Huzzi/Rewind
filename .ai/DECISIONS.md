@@ -555,3 +555,67 @@ Inherited-ACE drift is explicitly non-state (parent-derived) and never
 fails a comparison. Non-NTFS volumes: a NULL DACL reads as `None`; a failed
 read degrades. Off-Windows, a foreign `dacl` record refuses restoration and
 never matches a quarantined artifact.
+
+## ADR-022: Manifest/lockfile evidence is recorded, not interpreted
+
+### Context
+Phase 4 evaluated package-manager recipes and deferred them (ADR-016),
+naming the unlock condition: a recipe must add *provable evidence* —
+exemplified as "recording a package manifest fingerprint as part of
+strong capture" — never cosmetic labels, and never claims about remote or
+system-wide state. Nothing about a lockfile's *content* is provable from
+the recorded state model: the captured manifest holds content-addressed
+file states, not package semantics.
+
+### Decision
+Strong capture records a derived, per-operation **manifest/lockfile
+evidence layer** (`src/recipes.rs`, pure): for an exact,
+workspace-root-relative, case-sensitive filename set probed on the host
+(`Cargo.lock`/`Cargo.toml`; `package-lock.json` or `npm-shrinkwrap.json`
+with `package.json`; `pnpm-lock.yaml` with `package.json`; `go.sum` with
+`go.mod`; `uv.lock` with `pyproject.toml`; `requirements.txt` with
+`pyproject.toml`/`setup.py`), a captured operation records — per changed
+lockfile — the recipe kind, the lockfile path, the pre/post state CAS
+hashes (or absent), and the recognized manifest paths present. Recognition
+is a pure function of the already-recorded pre/post manifests: no
+filesystem re-reads, no new scans, no second hashing, no CAS objects, no
+lockfile parsing. Root-only depth (probe-verified nested
+`node_modules/.package-lock.json` false positives). Same-hash rewrites
+produce no entry; non-regular lockfile objects are suppressed. The
+evidence is additive operation metadata in a new
+`operation_evidence` table created with `CREATE TABLE IF NOT EXISTS` (the
+established idempotent-DDL pattern — the repository has no other
+migration mechanism), serialized with `skip_serializing_if` so
+evidence-free operations are byte-identical to the pre-phase form, and
+rendered only on `list`/`show`/timeline surfaces for stores that contain
+it.
+
+### Alternatives
+Parse lockfiles to report package/version changes (format-chasing; a
+claim stronger than recorded hashes prove — rejected). Fold evidence into
+fingerprints/state identity (drifts every state id — rejected).
+Any-depth matching (fabricates nested-vendor evidence — rejected).
+Case-insensitive matching (platform-divergent evidence — rejected).
+`ALTER TABLE ... ADD COLUMN` (first-of-kind migration mechanism where
+idempotent `IF NOT EXISTS` DDL is the established pattern — rejected).
+Recognizing ecosystems without local probe evidence (violates the
+no-implement-blind rule that already defers xattrs/chflags — rejected).
+
+### Rationale
+The evidence states only what is recorded and provable: "in this captured
+command, lockfile `X` changed from CAS hash `A` to `B`". It closes the
+fidelity gap between generic file effects and readable dependency-state
+evidence without touching state identity, undo/redo semantics, the
+writer, the journal, or the watcher — and it honors ADR-016's unlock
+condition without overturning the rejection of package-transaction
+reversibility claims. Remote/registry/cache/post-install state remains
+permanently outside the local model.
+
+### Consequences
+Operations captured after this phase carry provable lockfile evidence;
+pre-phase records read unchanged. Pre-phase catalogs self-extend with the
+new table on open (idempotent, non-destructive). Undo and redo are
+untouched: evidence is derived metadata that never enters plans,
+conflicts, effects, or reconciliation. Nested/monorepo lockfiles produce
+no evidence (documented root-only tradeoff), and unprobed ecosystems stay
+deferred until a probe host exists.
