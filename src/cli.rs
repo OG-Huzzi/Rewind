@@ -272,32 +272,6 @@ pub enum ApplyCommand {
     },
 }
 
-#[cfg(test)]
-mod cli_help_metadata_tests {
-    use super::Cli;
-    use clap::CommandFactory;
-
-    fn assert_subcommands_described(command: &clap::Command) {
-        for subcommand in command.get_subcommands() {
-            if subcommand.get_name() == "help" {
-                continue;
-            }
-
-            assert!(
-                subcommand.get_about().is_some(),
-                "missing help description for `{}`",
-                subcommand.get_name()
-            );
-            assert_subcommands_described(subcommand);
-        }
-    }
-
-    #[test]
-    fn every_command_and_nested_command_has_a_help_description() {
-        assert_subcommands_described(&Cli::command());
-    }
-}
-
 pub fn run(cli: Cli) -> Result<i32> {
     match cli.command {
         Command::Init(args) => {
@@ -1316,4 +1290,30 @@ fn append_bypass_marker(workspace: &Workspace, boundary_id: &str) -> Result<()> 
         eprintln!("rewind hook diagnostic: durable database bypass marker unavailable: {error}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod cli_help_metadata_tests {
+    use super::Cli;
+    use clap::CommandFactory;
+
+    fn assert_subcommands_described(command: &clap::Command) {
+        for subcommand in command.get_subcommands() {
+            if subcommand.get_name() == "help" {
+                continue;
+            }
+
+            assert!(
+                subcommand.get_about().is_some(),
+                "missing help description for `{}`",
+                subcommand.get_name()
+            );
+            assert_subcommands_described(subcommand);
+        }
+    }
+
+    #[test]
+    fn every_command_and_nested_command_has_a_help_description() {
+        assert_subcommands_described(&Cli::command());
+    }
 }
