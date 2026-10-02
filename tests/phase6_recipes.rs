@@ -134,7 +134,10 @@ fn timeline_range_args(fixture: &Fixture) -> Vec<String> {
         .catalog
         .list_operations(fixture.workspace.id)
         .expect("operations");
-    let created_at = operations.last().expect("at least one operation").created_at;
+    let created_at = operations
+        .last()
+        .expect("at least one operation")
+        .created_at;
     let since = rewind::humantime::format_rfc3339(created_at);
     let until = rewind::humantime::format_rfc3339(created_at + 1);
     vec![
