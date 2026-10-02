@@ -19,7 +19,9 @@
   runs passed 188/0. A previous Windows GNU full-suite process terminated
   with `STATUS_HEAP_CORRUPTION`; isolation and repeated Phase 6 runs passed,
   but the cause was not determined and remains a recorded limitation.
-- Audited all 30 visible CLI help pages and three malformed/error paths.
+- Audited all 30 visible CLI help pages and five malformed/error paths
+  (missing operation ID, invalid limit, extra `--json` value, uninitialized
+  workspace, and nonexistent init path).
   A fresh-root install and README quick start succeeded through capture,
   undo, redo, and recovery. Package listing contains only the declared
   source boundary and Cargo-generated metadata (with the expected warning

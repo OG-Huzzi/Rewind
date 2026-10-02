@@ -243,9 +243,11 @@ Local results on Windows with `stable-x86_64-pc-windows-gnu`:
   heap-corruption cause was not identified; this history is retained rather
   than represented as a diagnosed flake.
 - All 30 visible root and nested CLI help pages exited 0. The version is
-  `rewind 0.1.0`. Missing operation ID and invalid numeric limit return
-  usage errors (exit 2); `status` outside an initialized workspace returns
-  a readable error (exit 1). No panic was observed.
+  `rewind 0.1.0`. Missing operation ID, invalid numeric limit, and an
+  unexpected value after the `--json` flag return usage errors (exit 2).
+  `status` outside an initialized workspace and `init` with a nonexistent
+  path return readable errors (exit 1); the nonexistent path is not created.
+  No panic was observed.
 - Source installation into a fresh temporary root and the README PowerShell
   quick start passed: init, capture, undo, redo, list/show, and recovery.
 - `cargo package --list` succeeds with Cargo's expected missing-license

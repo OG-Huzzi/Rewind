@@ -22,10 +22,11 @@ absent; this does not affect hosted Windows CI, which uses MSVC.
   complete final-source runs above also passed. No root cause was found, so
   this is an unexplained local process failure, not a diagnosed flake.
 - CLI audit: all 30 visible root/nested help pages exited 0; `--version`
-  printed `rewind 0.1.0`. `show` without an ID and `inspect history
-  --limit nope` returned readable usage errors (exit 2); `status` outside
-  an initialized workspace returned a readable error (exit 1). No panic
-  was observed.
+  printed `rewind 0.1.0`. `show` without an ID, `inspect history --limit
+  nope`, and `inspect history --json nope` returned readable usage errors
+  (exit 2). `status` outside an initialized workspace and `init` with a
+  nonexistent path returned readable errors (exit 1); the nonexistent path
+  was not created. No panic was observed.
 - Fresh-root source install and README PowerShell quick start passed:
   version, init, capture, status, undo, redo, list, show, and recovery.
   Undo removed the created file; redo restored it; recovery reported a
