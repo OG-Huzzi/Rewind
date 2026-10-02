@@ -1,4 +1,35 @@
-# Phase 3 Implementation Handoff
+# Release Engineering Handoff
+
+Status: preparation is implemented on `main`; final pushed-commit CI is
+pending. Public release is blocked pending the owner's license choice, file,
+and matching manifest metadata. Do not create a tag or publish artifacts
+before that gate is met.
+
+**Release invariants:**
+
+- Keep Cargo at `0.1.0`; the first intended annotated tag is `v0.1.0` only
+  after the license gate is met. Do not declare `1.0.0` without the owner's
+  explicit decision and review of `.ai/RELEASE_1_0_EVIDENCE.md`.
+- Until the owner supplies a license file, keep both `license` and
+  `license-file` absent from `Cargo.toml`; never infer MIT from the old
+  manifest value. Add the actual chosen file and metadata to the package
+  allowlist when the owner supplies them.
+- `.github/workflows/release.yml` is tag-only and checks tag/version and
+  license metadata/file before deleting an existing same-tag Release or
+  building. Its three native jobs run fmt, check, Clippy with warnings
+  denied, and tests before building. One job attaches all three archives.
+- Archive names are `rewind-v<version>-<rust-target>.tar.gz` on Linux/macOS
+  and `rewind-v<version>-<rust-target>.zip` on Windows. Do not hand-publish
+  artifacts or report a successful release until the workflow and archive
+  checks complete.
+- Phase 7 local suite: 188/0 twice consecutively. A previous Windows GNU
+  full-suite process ended with `STATUS_HEAP_CORRUPTION`; its cause is
+  unknown and the incident is documented in `.ai/TEST_STATUS.md`. Hosted CI
+  on the final pushed commit remains pending.
+
+The prior implementation handoff follows, preserving its invariants.
+
+## Historical Phase 3 handoff
 
 **Phase 6 evidence-layer invariants (do not regress):** recognition
 (`src/recipes.rs::derive_evidence`) is a **pure function of the recorded

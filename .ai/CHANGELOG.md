@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Phase 7 release preparation (contract `.ai/PHASE_7_RELEASE.md`, ADR-023):
+  corrected crate metadata and restricted packaged files; removed the stale
+  unsupported MIT license claim; replaced the outdated README with an
+  evidence-linked product and installation guide; added missing CLI help
+  descriptions and a metadata test; and prepared a tag-only release workflow
+  that gates Linux/macOS/Windows archives on the existing CI checks. The
+  release remains blocked pending the owner's license file and matching
+  Cargo metadata; no tag, Release, or public artifact was created. Local
+  gates pass and the full suite passed 188/0 twice consecutively, while an
+  earlier unexplained Windows GNU `STATUS_HEAP_CORRUPTION` is retained in
+  `.ai/TEST_STATUS.md`. Final pushed-commit CI remains pending.
+
 - Phase 6 — manifest/lockfile evidence layer (contract
   `.ai/PHASE_6_RECIPES.md`, ADR-022): the ADR-016 unlock condition,
   implemented narrowly. Strong capture (`rewind run`) now records, per

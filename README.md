@@ -40,23 +40,26 @@ available storage, complete scans, and the safety gates in the contracts.
 Rewind is not a kernel monitor, version-control replacement, remote-side-effect
 reverser, or system-wide transaction manager.
 
-Evidence: the foundation and conditional-safety contracts are in
-`phases/phase-01-foundation.md` and
-`.ai/PHASE_0_7_ARCHITECTURE_FINALIZATION_REPORT.md`; command capture, undo,
-redo, quarantine, and recovery are exercised by `tests/foundation.rs`,
-`tests/hardening.rs`, and `tests/rollback_tree.rs`. Passive boundaries and
-watcher limits are specified by `.ai/PHASE_1_4_BOUNDARY_CORRELATION_REPORT.md`
-and `.ai/PHASE_3_CONTINUOUS_OBSERVATION.md`, with coverage in
-`tests/boundary_correlation.rs` and `tests/phase3_watcher.rs`. Package evidence
-is specified in `.ai/PHASE_6_RECIPES.md` and tested in
-`tests/phase6_recipes.rs`.
+Evidence: the [foundation contract](https://github.com/OG-Huzzi/Rewind/blob/main/phases/phase-01-foundation.md)
+and [conditional-safety report](https://github.com/OG-Huzzi/Rewind/blob/main/.ai/PHASE_0_7_ARCHITECTURE_FINALIZATION_REPORT.md)
+define the guarantees. Command capture, undo, redo, quarantine, and recovery
+are exercised by the [foundation](https://github.com/OG-Huzzi/Rewind/blob/main/tests/foundation.rs),
+[hardening](https://github.com/OG-Huzzi/Rewind/blob/main/tests/hardening.rs),
+and [rollback](https://github.com/OG-Huzzi/Rewind/blob/main/tests/rollback_tree.rs)
+tests. Passive boundaries and watcher limits are specified by the
+[boundary report](https://github.com/OG-Huzzi/Rewind/blob/main/.ai/PHASE_1_4_BOUNDARY_CORRELATION_REPORT.md)
+and [watcher contract](https://github.com/OG-Huzzi/Rewind/blob/main/.ai/PHASE_3_CONTINUOUS_OBSERVATION.md),
+with coverage in the [boundary](https://github.com/OG-Huzzi/Rewind/blob/main/tests/boundary_correlation.rs)
+and [watcher](https://github.com/OG-Huzzi/Rewind/blob/main/tests/phase3_watcher.rs)
+tests. Package evidence is specified in the [Phase 6 contract](https://github.com/OG-Huzzi/Rewind/blob/main/.ai/PHASE_6_RECIPES.md)
+and tested in [phase6_recipes](https://github.com/OG-Huzzi/Rewind/blob/main/tests/phase6_recipes.rs).
 
 ## Platform support
 
 “Supported” means the object is captured, restored, and verified on the
 platform that produces it, subject to the conditions and refusal gates above.
-The matrix matches `.ai/PHASE_5_VERIFICATION_REPORT.md` and
-`.ai/PHASE_5_PLATFORM_EXPANSION.md`.
+The matrix matches the [Phase 5 verification report](https://github.com/OG-Huzzi/Rewind/blob/main/.ai/PHASE_5_VERIFICATION_REPORT.md)
+and [platform contract](https://github.com/OG-Huzzi/Rewind/blob/main/.ai/PHASE_5_PLATFORM_EXPANSION.md).
 
 | Object | Linux | macOS | Windows | Conditions and refusals |
 |---|---|---|---|---|
@@ -80,7 +83,9 @@ and directory DACLs; POSIX xattrs (no POSIX probe host was available); uid/gid,
 Windows owner/group, and SACL state (privilege-bound); sparse-file layout; and
 macOS `chflags` (no macOS probe host). Package-transaction semantics and
 range-based restore remain excluded. The blockers and scope are recorded in
-`.ai/PHASE_5_VERIFICATION_REPORT.md`, `.ai/PHASE_5_NTFS_DACL.md`, and ADR-016.
+the [Phase 5 report](https://github.com/OG-Huzzi/Rewind/blob/main/.ai/PHASE_5_VERIFICATION_REPORT.md),
+[DACL contract](https://github.com/OG-Huzzi/Rewind/blob/main/.ai/PHASE_5_NTFS_DACL.md),
+and [ADR-016](https://github.com/OG-Huzzi/Rewind/blob/main/.ai/DECISIONS.md#adr-016-package-specific-recipes-are-deferred).
 
 ## Install
 

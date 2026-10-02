@@ -1,3 +1,49 @@
+# Phase 7 Test Status
+
+Contract: `.ai/PHASE_7_RELEASE.md` (AC1–AC12); decision: ADR-023.
+
+Local environment: Windows, `stable-x86_64-pc-windows-gnu`, NTFS. The
+default MSVC Rust toolchain cannot link on this host because `link.exe` is
+absent; this does not affect hosted Windows CI, which uses MSVC.
+
+- `cargo fmt --all -- --check`: PASS.
+- `cargo check --all-targets`: PASS.
+- `cargo clippy --all-targets --color never -- -D warnings`: PASS.
+- `cargo test --color never`: 188 passed / 0 failed on two consecutive
+  final-source runs (71 library unit tests plus 117 integration tests;
+  binary and doc-test harnesses contain no tests).
+- Incident history retained: an earlier full-suite run passed, then the
+  next two full-suite attempts reported
+  `passive_observations_and_capture_failures_carry_no_evidence` failing in
+  `tests/phase6_recipes` and the Windows process exited with
+  `0xc0000374 STATUS_HEAP_CORRUPTION`. The test passed alone; the complete
+  Phase 6 test binary passed with `--nocapture` and `--test-threads=1`; and
+  three subsequent standard runs of that integration binary passed. The two
+  complete final-source runs above also passed. No root cause was found, so
+  this is an unexplained local process failure, not a diagnosed flake.
+- CLI audit: all 30 visible root/nested help pages exited 0; `--version`
+  printed `rewind 0.1.0`. `show` without an ID and `inspect history
+  --limit nope` returned readable usage errors (exit 2); `status` outside
+  an initialized workspace returned a readable error (exit 1). No panic
+  was observed.
+- Fresh-root source install and README PowerShell quick start passed:
+  version, init, capture, status, undo, redo, list, show, and recovery.
+  Undo removed the created file; redo restored it; recovery reported a
+  healthy workspace with no unfinished transaction.
+- `cargo package --list`: PASS with the expected warning that no license or
+  license-file is specified. Entries are limited to `.cargo_vcs_info.json`,
+  `Cargo.lock`, `Cargo.toml`, `Cargo.toml.orig`, `README.md`, and `src/**`.
+  No `.ai/`, tests, examples, integrations, or workflow files are packaged.
+- Release workflow YAML parsed and static assertions passed: only the `v*`
+  tag trigger, full 40-character action SHAs, all three native runner jobs,
+  quality gates before build, and one aggregated release job. No
+  `actionlint` binary was available. Release workflow was not run because
+  the owner license gate prohibits creating a tag.
+- No Phase 7 hosted CI run has been observed yet; it is pending push of the
+  prepared commits. Do not call AC12 complete until all three platform
+  checks for the final commit are green. No tag, Release, or public artifact
+  exists.
+
 # Phase 1 Test Status
 
 Status after the Phase 6 evidence layer. Newer records are at the top;

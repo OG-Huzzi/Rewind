@@ -1,8 +1,13 @@
 # Current Implementation State
 
-Status: **Phase 6 delivered** (manifest/lockfile evidence layer, contract
-`.ai/PHASE_6_RECIPES.md`, ADR-022; local gates green — full suite 187
-passed / 0 failed twice consecutively; CI recorded in TEST_STATUS.md).
+Status: **Phase 7 release preparation implemented; public release blocked**
+pending the owner's license file and matching metadata. Local gates pass and
+the 188-test suite passed twice consecutively; the earlier unexplained
+Windows GNU `STATUS_HEAP_CORRUPTION` is recorded in TEST_STATUS.md. Final
+hosted CI on the pushed preparation commits remains pending. No release tag
+or public artifact exists. Phase 6 is delivered (manifest/lockfile evidence
+layer, contract `.ai/PHASE_6_RECIPES.md`, ADR-022; CI recorded in
+TEST_STATUS.md).
 Phase 5 closed (signoff `.ai/PHASE_5_VERIFICATION_REPORT.md`;
 close-out contract `.ai/PHASE_5_CLOSEOUT.md`) — four platform-expansion
 slices delivered and CI-verified, the capability matrix final, all

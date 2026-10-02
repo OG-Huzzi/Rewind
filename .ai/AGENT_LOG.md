@@ -1,5 +1,34 @@
 # Agent Log
 
+## Phase 7 (release engineering preparation) — implemented; release gated
+
+- Baseline verified at clean `main` / `origin/main` `36cfeba`; no tags and
+  no license file. The stale `license = "MIT"` metadata was not treated as
+  a legal decision.
+- Committed the Phase 7 contract and ADR-023 before production-facing
+  changes. Kept version `0.1.0`, removed unsupported license metadata,
+  added accurate Cargo metadata and an explicit crate allowlist, rewrote the
+  README with evidence and conditional claims, and added descriptions for
+  every real CLI command plus a help-metadata unit test.
+- Added the `v*`-tag-only release workflow with a read-only version/license
+  preflight before old Release deletion, native Linux/macOS/Windows gates
+  before builds, target-derived archive names, full-SHA-pinned actions, and
+  one Release aggregation job. Static YAML/structure checks passed. No tag
+  or release was created.
+- Local fmt/check/Clippy gates pass. Two consecutive final-source full test
+  runs passed 188/0. A previous Windows GNU full-suite process terminated
+  with `STATUS_HEAP_CORRUPTION`; isolation and repeated Phase 6 runs passed,
+  but the cause was not determined and remains a recorded limitation.
+- Audited all 30 visible CLI help pages and three malformed/error paths.
+  A fresh-root install and README quick start succeeded through capture,
+  undo, redo, and recovery. Package listing contains only the declared
+  source boundary and Cargo-generated metadata (with the expected warning
+  that the license is absent).
+- Remaining: push prepared commits, observe final three-platform CI, then
+  stop before tagging until the owner provides license terms, the license
+  file, and matching Cargo metadata. Collect 1.0 evidence without declaring
+  the version; crates.io remains gated on an owner token.
+
 ## Phase 6 (manifest/lockfile evidence layer) — executed
 
 - Baseline verified: `main` at `77567e9` = `origin/main`, tree clean; CI

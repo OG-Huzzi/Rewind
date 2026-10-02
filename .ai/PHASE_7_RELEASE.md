@@ -1,6 +1,6 @@
 # Phase 7 Contract — Release Engineering
 
-Status: **CONTRACTED; RELEASE BLOCKED pending the owner's license decision.**
+Status: **PREPARATION IMPLEMENTED; RELEASE BLOCKED pending the owner's license decision.**
 The repository contains no license file. Preparation that does not select a
 license or publish artifacts may proceed; no release tag or GitHub Release is
 permitted until the owner supplies a license file and matching Cargo metadata.
@@ -220,3 +220,44 @@ Revert by reverting the release workflow/metadata/README commits and this
 contract/ADR in reverse order. If a tag was created, delete its GitHub Release
 and tag only when it has no external consumers; assets can be rebuilt from the
 same source commit. Never rewrite branch history or force-push.
+
+## 9. Execution record and current gate
+
+Preparation is implemented on `main` through the Phase 7 commit series. The
+contract and ADR-023 preceded production metadata, README, CLI-help, and
+workflow edits. The manifest has no `license` or `license-file` field, and
+the README names the owner decision explicitly. The tag workflow checks for
+both an owner-selected manifest license and an existing license file before
+it deletes any old same-tag Release or starts a build.
+
+Local results on Windows with `stable-x86_64-pc-windows-gnu`:
+
+- `cargo fmt --all -- --check`, `cargo check --all-targets`, and
+  `cargo clippy --all-targets --color never -- -D warnings`: pass.
+- `cargo test --color never`: 188 passed / 0 failed on two consecutive
+  runs (71 unit tests and 117 integration tests each run).
+- A preceding full-suite attempt failed in the Phase 6 passive-observation
+  test process with Windows `0xc0000374 STATUS_HEAP_CORRUPTION`. The exact
+  test and full Phase 6 binary passed in isolation; three repeated Phase 6
+  suite runs passed, followed by the two complete passing runs above. The
+  heap-corruption cause was not identified; this history is retained rather
+  than represented as a diagnosed flake.
+- All 30 visible root and nested CLI help pages exited 0. The version is
+  `rewind 0.1.0`. Missing operation ID and invalid numeric limit return
+  usage errors (exit 2); `status` outside an initialized workspace returns
+  a readable error (exit 1). No panic was observed.
+- Source installation into a fresh temporary root and the README PowerShell
+  quick start passed: init, capture, undo, redo, list/show, and recovery.
+- `cargo package --list` succeeds with Cargo's expected missing-license
+  warning and contains only the manifest, lockfile, README, `src/**`, and
+  Cargo-generated package metadata.
+- Static workflow review confirms a `v*` tag-only trigger, full-SHA action
+  pins, three native runner jobs with the CI gates before builds, and one
+  aggregated Release job. The workflow has not run because no tag is
+  permitted while the license gate is unresolved.
+
+The remaining release gates are owner-supplied license terms and matching
+manifest metadata, final pushed-commit CI on all three hosted platforms,
+then—only after the license gate is resolved—the annotated `v0.1.0` tag and
+artifact/Release verification. No tag, Release, or public binary artifact
+has been created.

@@ -1,8 +1,9 @@
 # Engineering Roadmap
 
-Status: Phase 4 (time and ecosystem integrations) delivered and CI-verified
-(`1f37ec3`); Phase 5 (platform expansion) first slice — POSIX named pipes —
-delivered per `.ai/PHASE_5_PLATFORM_EXPANSION.md`.
+Status: Phases 1–6 delivered and CI-verified. Phase 7 release preparation is
+implemented and awaiting final pushed-commit CI; publishing remains blocked
+until the owner supplies a license file and matching Cargo metadata. See
+`.ai/PHASE_7_RELEASE.md`.
 
 ## 1. Phase strategy
 
@@ -114,8 +115,23 @@ semantics. Still deferred: every unprobed ecosystem (yarn, bun, poetry,
 Pipfile, Gemfile, composer, …), monorepo sub-project lockfiles (root-only
 depth policy), and any restore or re-run semantics for package actions.
 
-The next planned phase is **release engineering** (packaging, user-facing
-documentation, 1.0). Further capability expansion remains possible but
-requires a new contract amendment with a capability-matrix update before
-implementation, and — for anything not probeable in the working
-environment — a real probe host first.
+## 9. Phase 7 - Release engineering
+
+Preparation delivered: accurate package metadata and crate allowlist, an
+evidence-linked user README, complete CLI help descriptions, and a
+tag-triggered three-platform release workflow. Local release-preparation
+gates pass; the full 188-test suite passed twice consecutively, with an
+earlier unexplained Windows GNU `STATUS_HEAP_CORRUPTION` retained in the
+test record. Pushed-commit CI remains to be verified.
+
+The GitHub Release is blocked until the owner supplies legal terms and an
+actual license file. Do not create the intended `v0.1.0` annotated tag or
+publish artifacts before Cargo metadata names that license and the workflow
+preflight can confirm its file. The owner also decides whether to declare
+`1.0.0`; technical evidence is collected in
+`.ai/RELEASE_1_0_EVIDENCE.md`. Crates.io remains deferred until an owner
+publishing token is supplied.
+
+Further capability expansion remains possible but requires a new contract
+amendment with a capability-matrix update before implementation, and—for
+anything not probeable in the working environment—a real probe host first.

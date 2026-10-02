@@ -71,3 +71,27 @@
       bun, poetry, Pipfile, Gemfile, composer, …) and monorepo
       sub-project lockfiles — each requires probe evidence and a contract
       amendment; package-transaction semantics remain rejected (ADR-016).
+
+# Phase 7 TODO
+
+- [x] Contract and ADR-023 committed before release-facing implementation.
+- [x] Correct Cargo package metadata and restrict the crate contents to the
+      declared allowlist; remove the unsupported MIT claim.
+- [x] Replace stale README claims with evidence-linked capability guidance,
+      install steps, and a runnable quick start; audit CLI help and malformed
+      inputs.
+- [x] Add the license-preflight, tag-only three-platform release workflow;
+      statically inspect its gates, permissions, aggregation, and full-SHA
+      action pins.
+- [x] Local fmt/check/Clippy pass; full suite 188/0 twice consecutively;
+      install and README quick start pass. The earlier unexplained Windows
+      GNU heap-corruption incident remains documented in TEST_STATUS.md.
+- [ ] Push the prepared commit series and confirm final main CI green on
+      Ubuntu, macOS, and Windows; update the evidence docs with observed runs.
+- [ ] Owner supplies a license file and chooses matching Cargo metadata.
+      No tag, Release, or public artifacts before this gate is satisfied.
+- [ ] After the license gate: create the annotated v0.1.0 tag, verify the
+      workflow and all three archives, and smoke-test an installed archive.
+- [ ] Owner separately decides whether to declare 1.0.0 using
+      `.ai/RELEASE_1_0_EVIDENCE.md`; provide a crates.io token only if that
+      publication path is wanted.
