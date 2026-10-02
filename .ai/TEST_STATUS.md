@@ -7,12 +7,14 @@ earlier phase records are preserved below.
 
 Contract: `.ai/PHASE_6_RECIPES.md` (AC1–AC10); decision: ADR-022.
 
-Local suite on Windows (x86_64-pc-windows-gnu, Rust 1.98.1, debug, NTFS):
+Local suite on Windows (x86_64-pc-windows-gnu → default toolchain updated
+to 1.99.0 during this phase, see the CI record below; debug, NTFS):
 `cargo fmt --all -- --check` PASS, `cargo check --all-targets` PASS,
 `cargo clippy --all-targets --all-features -- -D warnings` PASS, and
-`cargo test --all-targets` **187 passed / 0 failed, twice consecutively** —
-61→70 lib (9 new recipes unit tests), 10 boundary_correlation, 13
-foundation, 8 hardening, 15 phase2_dependency, 17 phase3_watcher, 7
+`cargo test --all-targets` **187 passed / 0 failed, twice consecutively**
+(verified on 1.98.1 before the toolchain update and re-verified on 1.99.0
+after it) — 61→70 lib (9 new recipes unit tests), 10 boundary_correlation,
+13 foundation, 8 hardening, 15 phase2_dependency, 17 phase3_watcher, 7
 phase4_timeline, 16 phase5_platform, **12 phase6_recipes** (all new), 3
 rollback_path_scan, 8 rollback_tree, 8 shell_integration. Every existing
 suite unchanged and green.
@@ -91,8 +93,22 @@ file-based and by the recorded probe; pnpm/uv/pip recognition is covered
 file-based and by the recorded probes, with no real-manager CI test.
 
 CI (GitHub Actions, `OG-Huzzi/Rewind`, fmt/check/clippy -D warnings/test
-on ubuntu-latest, macos-latest, windows-latest): **recorded below after
-verification** — pending at the time of this record.
+on ubuntu-latest, macos-latest, windows-latest):
+
+- Run on `7efbc14`: **all three platforms failed at the Format step**
+  (annotations: "Process completed with exit code 1" with no clippy or
+  test-panic annotations — a plain run step). Classified: a **real
+  failure**, not a flake, and not a toolchain mystery (although CI's
+  `@stable` now resolves to 1.99.0, released 2026-09-28, the diff also
+  reproduces on 1.98.1's rustfmt). Root cause: the adversarial-review
+  fix commit (`8002933`) edited `tests/phase6_recipes.rs` through a
+  scripted edit that introduced an over-long line, and the fmt gate was
+  not re-run after it — only the test suites were. Process defect in the
+  review step, fixed by re-running the gate discipline: `cargo fmt
+  --all` applied (`126baaf`), and the full gate sequence re-executed on
+  the updated 1.99.0 toolchain (fmt/check/clippy `-D warnings` + suite
+  187/0 twice). Fix pushed for re-verification; the re-run is recorded
+  below.
 
 ## Phase 5 close-out / CI stabilization
 

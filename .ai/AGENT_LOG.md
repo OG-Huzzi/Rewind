@@ -32,8 +32,15 @@
   calendar range would have rotted in 2027) and the missing
   `inspect history --json` surface assertions. No production change.
 - Gates: fmt/check/clippy `-D warnings` green; full suite 187/0 twice
-  consecutively. CI verification pending at commit time; to be recorded
-  in TEST_STATUS.md.
+  consecutively.
+- CI run on `7efbc14` failed on all three platforms at the Format step:
+  REAL failure, not a flake. Root cause: the review-fix commit's scripted
+  edit introduced an over-long line and the fmt gate was not re-run after
+  it (only tests were) — a process defect in the review step, recorded
+  honestly in TEST_STATUS. Fixed: fmt applied (`126baaf`), default
+  toolchain updated to 1.99.0 (the version CI's `@stable` resolves to),
+  all gates re-run green (suite 187/0 twice). Re-verification pushed;
+  record the final run in TEST_STATUS when observed.
 
 ## Phase 5 close-out / CI stabilization — executed
 
