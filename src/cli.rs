@@ -67,9 +67,13 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Initialize workspace identity, its external store, and a trusted baseline.
     Init(InitArgs),
+    /// Show the workspace condition and the safety gates that affect it.
     Status,
+    /// Scan the workspace and reconcile current filesystem state.
     Reconcile,
+    /// Inspect and complete unfinished filesystem recovery, if possible.
     Recover {
         /// Abandon unclassifiable unfinished transactions after archiving
         /// their artifacts, then reconcile the live state into a new trusted
@@ -77,6 +81,7 @@ pub enum Command {
         #[arg(long)]
         reconcile: bool,
     },
+    /// Attempt strong before/after filesystem capture around a command.
     Run {
         // `last` cannot be combined with `trailing_var_arg` (clap panics on
         // that combination in debug builds); `trailing_var_arg` alone keeps
@@ -84,36 +89,37 @@ pub enum Command {
         #[arg(trailing_var_arg = true)]
         command: Vec<String>,
     },
+    /// Request undo of the newest or selected eligible captured operation.
     Undo {
         operation_id: Option<i64>,
         #[arg(long)]
         force: bool,
     },
-    Redo {
-        operation_id: Option<i64>,
-    },
+    /// Reapply the recorded state for the newest or selected undone operation.
+    Redo { operation_id: Option<i64> },
+    /// List recorded operations in the current workspace.
     List,
-    Show {
-        operation_id: i64,
-    },
-    Diff {
-        operation_id: i64,
-    },
-    Snapshot {
-        name: String,
-    },
-    Restore {
-        name: String,
-    },
+    /// Show recorded details for an operation id.
+    Show { operation_id: i64 },
+    /// Show recorded filesystem effects for an operation id.
+    Diff { operation_id: i64 },
+    /// Capture a named workspace state.
+    Snapshot { name: String },
+    /// Restore a named snapshot when the rollback safety checks permit it.
+    Restore { name: String },
+    /// Inspect workspace integrity and report actionable diagnostics.
     Doctor,
+    /// Inspect recorded history without taking a writer lease.
     Inspect {
         #[command(subcommand)]
         command: InspectCommand,
     },
+    /// Plan selected rollback operations without mutating the workspace.
     Plan {
         #[command(subcommand)]
         command: PlanCommand,
     },
+    /// Revalidate and apply selected rollback operations.
     Apply {
         #[command(subcommand)]
         command: ApplyCommand,
@@ -122,10 +128,12 @@ pub enum Command {
     Ui,
     /// Advisory continuous observation (Phase 3). The watcher is never
     /// authoritative; see `.ai/PHASE_3_CONTINUOUS_OBSERVATION.md`.
+    /// Manage the optional advisory filesystem watcher.
     Watch {
         #[command(subcommand)]
         command: WatchCommand,
     },
+    /// Record passive shell-hook command boundaries.
     Hook {
         #[command(subcommand)]
         command: HookCommand,
@@ -137,6 +145,7 @@ pub enum Command {
 /// loop; `status` is read-only; `stop` is a bounded, signal-free stop.
 #[derive(Debug, Subcommand)]
 pub enum WatchCommand {
+    /// Start the advisory watcher after recording any unobserved restart gap.
     Start {
         /// Run the watcher loop in this process instead of detaching.
         #[arg(long)]
@@ -152,6 +161,7 @@ pub enum WatchCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Stop the tracked advisory watcher.
     Stop,
     /// The detached watcher loop itself; spawned by `start`. Running it
     /// directly skips the restart-gap check that `start` performs.
@@ -174,12 +184,14 @@ pub struct InitArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum HookCommand {
+    /// Record a passive pre-command boundary and print its immutable id.
     Pre {
         #[arg(long)]
         command: String,
         #[arg(long)]
         session: Option<String>,
     },
+    /// Consume the exact pre-command boundary and record its observation outcome.
     Post {
         /// Immutable boundary identity returned by `rewind hook pre` on
         /// stdout. Required: a post-hook never guesses which boundary it
@@ -234,6 +246,7 @@ pub enum InspectCommand {
 /// rollback would do and whether it is permitted.
 #[derive(Debug, Subcommand)]
 pub enum PlanCommand {
+    /// Plan selected undo/redo operations without mutating the workspace.
     Rollback {
         #[arg(long = "undo")]
         undo_ids: Vec<i64>,
@@ -248,6 +261,7 @@ pub enum PlanCommand {
 /// that no plan can be produced and executed in one unexamined step.
 #[derive(Debug, Subcommand)]
 pub enum ApplyCommand {
+    /// Revalidate and execute selected undo/redo operations.
     Rollback {
         #[arg(long = "undo")]
         undo_ids: Vec<i64>,
@@ -256,6 +270,32 @@ pub enum ApplyCommand {
         #[arg(long)]
         json: bool,
     },
+}
+
+#[cfg(test)]
+mod cli_help_metadata_tests {
+    use super::Cli;
+    use clap::CommandFactory;
+
+    fn assert_subcommands_described(command: &clap::Command) {
+        for subcommand in command.get_subcommands() {
+            if subcommand.get_name() == "help" {
+                continue;
+            }
+
+            assert!(
+                subcommand.get_about().is_some(),
+                "missing help description for `{}`",
+                subcommand.get_name()
+            );
+            assert_subcommands_described(subcommand);
+        }
+    }
+
+    #[test]
+    fn every_command_and_nested_command_has_a_help_description() {
+        assert_subcommands_described(&Cli::command());
+    }
 }
 
 pub fn run(cli: Cli) -> Result<i32> {
