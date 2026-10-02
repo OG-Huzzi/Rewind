@@ -255,9 +255,14 @@ Local results on Windows with `stable-x86_64-pc-windows-gnu`:
   pins, three native runner jobs with the CI gates before builds, and one
   aggregated Release job. The workflow has not run because no tag is
   permitted while the license gate is unresolved.
+- The pushed implementation commit `6591600c105d33372de91b183f6a09341c5189f1`
+  passed CI run #65 on Ubuntu, macOS, and Windows; see
+  [the run](https://github.com/OG-Huzzi/Rewind/actions/runs/37026986787).
+  A fresh clone of that commit also installed into an empty temporary root,
+  reported `rewind 0.1.0`, and passed the README quick start through healthy
+  recovery.
 
 The remaining release gates are owner-supplied license terms and matching
-manifest metadata, final pushed-commit CI on all three hosted platforms,
-then—only after the license gate is resolved—the annotated `v0.1.0` tag and
-artifact/Release verification. No tag, Release, or public binary artifact
-has been created.
+manifest metadata, then—only after the license gate is resolved—the
+annotated `v0.1.0` tag and artifact/Release verification. No tag, Release,
+or public binary artifact has been created.

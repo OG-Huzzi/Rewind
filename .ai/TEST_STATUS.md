@@ -39,10 +39,15 @@ absent; this does not affect hosted Windows CI, which uses MSVC.
   quality gates before build, and one aggregated release job. No
   `actionlint` binary was available. Release workflow was not run because
   the owner license gate prohibits creating a tag.
-- No Phase 7 hosted CI run has been observed yet; it is pending push of the
-  prepared commits. Do not call AC12 complete until all three platform
-  checks for the final commit are green. No tag, Release, or public artifact
-  exists.
+- GitHub Actions CI run #65, push commit
+  `6591600c105d33372de91b183f6a09341c5189f1`, completed successfully on
+  Ubuntu, macOS, and Windows: [run details](https://github.com/OG-Huzzi/Rewind/actions/runs/37026986787).
+  Each platform passed format, all-target check, Clippy with warnings
+  denied, and the full suite. A fresh clone of the pushed commit installed
+  locally and passed the README quick start through recovery.
+- The release workflow itself remains unrun because no tag is permitted
+  before the owner license gate is resolved. No tag, Release, or public
+  artifact exists.
 
 # Phase 1 Test Status
 

@@ -1,9 +1,8 @@
 # Engineering Roadmap
 
-Status: Phases 1–6 delivered and CI-verified. Phase 7 release preparation is
-implemented and awaiting final pushed-commit CI; publishing remains blocked
-until the owner supplies a license file and matching Cargo metadata. See
-`.ai/PHASE_7_RELEASE.md`.
+Status: Phases 1–7 release preparation implemented and CI-verified. Public
+publishing remains blocked until the owner supplies a license file and
+matching Cargo metadata. See `.ai/PHASE_7_RELEASE.md`.
 
 ## 1. Phase strategy
 
@@ -122,7 +121,8 @@ evidence-linked user README, complete CLI help descriptions, and a
 tag-triggered three-platform release workflow. Local release-preparation
 gates pass; the full 188-test suite passed twice consecutively, with an
 earlier unexplained Windows GNU `STATUS_HEAP_CORRUPTION` retained in the
-test record. Pushed-commit CI remains to be verified.
+test record. CI run #65 on commit `6591600` is green on Ubuntu, macOS, and
+Windows ([run details](https://github.com/OG-Huzzi/Rewind/actions/runs/37026986787)).
 
 The GitHub Release is blocked until the owner supplies legal terms and an
 actual license file. Do not create the intended `v0.1.0` annotated tag or

@@ -12,7 +12,8 @@
   Cargo metadata; no tag, Release, or public artifact was created. Local
   gates pass and the full suite passed 188/0 twice consecutively, while an
   earlier unexplained Windows GNU `STATUS_HEAP_CORRUPTION` is retained in
-  `.ai/TEST_STATUS.md`. Final pushed-commit CI remains pending.
+  `.ai/TEST_STATUS.md`. CI run #65 on commit `6591600` passed on Ubuntu,
+  macOS, and Windows.
 
 - Phase 6 — manifest/lockfile evidence layer (contract
   `.ai/PHASE_6_RECIPES.md`, ADR-022): the ADR-016 unlock condition,

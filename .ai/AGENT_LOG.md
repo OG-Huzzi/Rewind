@@ -24,10 +24,12 @@
   undo, redo, and recovery. Package listing contains only the declared
   source boundary and Cargo-generated metadata (with the expected warning
   that the license is absent).
-- Remaining: push prepared commits, observe final three-platform CI, then
-  stop before tagging until the owner provides license terms, the license
-  file, and matching Cargo metadata. Collect 1.0 evidence without declaring
-  the version; crates.io remains gated on an owner token.
+- Pushed to `main` at `6591600`; GitHub Actions CI run #65 passed on
+  Ubuntu/macOS/Windows. A fresh remote clone at that commit installed with
+  Cargo and passed the README capture/undo/redo/recovery sequence.
+- Remaining: stop before tagging until the owner provides license terms,
+  the license file, and matching Cargo metadata. Collect 1.0 evidence
+  without declaring the version; crates.io remains gated on an owner token.
 
 ## Phase 6 (manifest/lockfile evidence layer) — executed
 

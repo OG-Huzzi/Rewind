@@ -1,9 +1,9 @@
 # Release Engineering Handoff
 
-Status: preparation is implemented on `main`; final pushed-commit CI is
-pending. Public release is blocked pending the owner's license choice, file,
-and matching manifest metadata. Do not create a tag or publish artifacts
-before that gate is met.
+Status: preparation is implemented on `main`; CI run #65 passed on Ubuntu,
+macOS, and Windows for commit `6591600`. Public release is blocked pending
+the owner's license choice, file, and matching manifest metadata. Do not
+create a tag or publish artifacts before that gate is met.
 
 **Release invariants:**
 
@@ -24,8 +24,9 @@ before that gate is met.
   checks complete.
 - Phase 7 local suite: 188/0 twice consecutively. A previous Windows GNU
   full-suite process ended with `STATUS_HEAP_CORRUPTION`; its cause is
-  unknown and the incident is documented in `.ai/TEST_STATUS.md`. Hosted CI
-  on the final pushed commit remains pending.
+  unknown and the incident is documented in `.ai/TEST_STATUS.md`. CI run #65
+  passed on all three platforms:
+  https://github.com/OG-Huzzi/Rewind/actions/runs/37026986787.
 
 The prior implementation handoff follows, preserving its invariants.
 

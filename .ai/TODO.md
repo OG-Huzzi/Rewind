@@ -86,8 +86,8 @@
 - [x] Local fmt/check/Clippy pass; full suite 188/0 twice consecutively;
       install and README quick start pass. The earlier unexplained Windows
       GNU heap-corruption incident remains documented in TEST_STATUS.md.
-- [ ] Push the prepared commit series and confirm final main CI green on
-      Ubuntu, macOS, and Windows; update the evidence docs with observed runs.
+- [x] Push the prepared commit series; CI run #65 green on Ubuntu, macOS,
+      and Windows. Record the hosted run and pushed-clone install evidence.
 - [ ] Owner supplies a license file and chooses matching Cargo metadata.
       No tag, Release, or public artifacts before this gate is satisfied.
 - [ ] After the license gate: create the annotated v0.1.0 tag, verify the

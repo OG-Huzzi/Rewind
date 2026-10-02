@@ -3,9 +3,9 @@
 Status: **Phase 7 release preparation implemented; public release blocked**
 pending the owner's license file and matching metadata. Local gates pass and
 the 188-test suite passed twice consecutively; the earlier unexplained
-Windows GNU `STATUS_HEAP_CORRUPTION` is recorded in TEST_STATUS.md. Final
-hosted CI on the pushed preparation commits remains pending. No release tag
-or public artifact exists. Phase 6 is delivered (manifest/lockfile evidence
+Windows GNU `STATUS_HEAP_CORRUPTION` is recorded in TEST_STATUS.md. Hosted
+CI run #65 on commit `6591600` is green on Ubuntu, macOS, and Windows. No
+release tag or public artifact exists. Phase 6 is delivered (manifest/lockfile evidence
 layer, contract `.ai/PHASE_6_RECIPES.md`, ADR-022; CI recorded in
 TEST_STATUS.md).
 Phase 5 closed (signoff `.ai/PHASE_5_VERIFICATION_REPORT.md`;
