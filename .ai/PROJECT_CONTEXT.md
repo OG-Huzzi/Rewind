@@ -1,6 +1,7 @@
 # RewindUndo Project Context
 
-Status: Phases 1–6 delivered and CI-verified (see CURRENT_STATE.md);
+Status: Phases 1–7 delivered; the MIT-licensed `v0.1.0` release is published
+and verified (see CURRENT_STATE.md and PHASE_7_RELEASE.md).
 Phase 6 is the manifest/lockfile evidence layer for strong capture
 (contract `.ai/PHASE_6_RECIPES.md`, ADR-022) — the ADR-016 unlock
 condition, delivered without overturning ADR-016's rejection of

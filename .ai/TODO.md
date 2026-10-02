@@ -76,7 +76,8 @@
 
 - [x] Contract and ADR-023 committed before release-facing implementation.
 - [x] Correct Cargo package metadata and restrict the crate contents to the
-      declared allowlist; remove the unsupported MIT claim.
+      declared allowlist; the owner later selected MIT and the package now
+      includes the matching LICENSE file.
 - [x] Replace stale README claims with evidence-linked capability guidance,
       install steps, and a runnable quick start; audit CLI help and malformed
       inputs.
@@ -88,10 +89,15 @@
       GNU heap-corruption incident remains documented in TEST_STATUS.md.
 - [x] Push the prepared commit series; CI run #65 green on Ubuntu, macOS,
       and Windows. Record the hosted run and pushed-clone install evidence.
-- [ ] Owner supplies a license file and chooses matching Cargo metadata.
-      No tag, Release, or public artifacts before this gate is satisfied.
-- [ ] After the license gate: create the annotated v0.1.0 tag, verify the
-      workflow and all three archives, and smoke-test an installed archive.
+- [x] Owner selected MIT (SPDX `MIT`); add `LICENSE`, matching Cargo
+      metadata/package allowlist, and license notices to README.
+- [x] CI run #68 validates the license commit; add a full-history checkout
+      to the release publisher after run #1 exposed the missing repository.
+- [x] CI run #69 validates the publisher fix. Annotated `v0.1.0` tag and
+      release workflow run #2 succeeded; all three assets were downloaded,
+      Unix archive listings inspected, and the Windows binary smoke-tested.
+- [x] Record the verified release and workflow history in project docs and
+      README, then push and verify CI for the documentation commit.
 - [ ] Owner separately decides whether to declare 1.0.0 using
       `.ai/RELEASE_1_0_EVIDENCE.md`; provide a crates.io token only if that
       publication path is wanted.

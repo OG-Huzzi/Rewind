@@ -33,19 +33,31 @@ owner decides whether and when to declare `1.0.0`.
 
 ## Release and packaging evidence
 
-- Cargo package metadata is prepared at version `0.1.0`; `.ai/`, tests,
-  examples, workflow files, and shell integration material are excluded by
-  an explicit package allowlist.
+- Cargo package metadata is version `0.1.0` with owner-selected
+  `license = "MIT"`; the root `LICENSE` and `/LICENSE` package include entry
+  are verified. `.ai/`, tests, examples, workflow files, and shell integration
+  material are excluded by an explicit package allowlist.
 - Source installation into an empty temporary install root and the README
   quick start have been exercised on Windows with the GNU Rust toolchain,
   including a fresh clone of pushed commit `6591600`.
-- The tag-only release workflow is prepared with native Linux, macOS, and
-  Windows builds, format/check/Clippy/test gates before archive builds,
-  full-SHA-pinned actions, and one Release aggregation job. It has not run.
-- There is no license file. Cargo's stale `MIT` declaration was removed;
-  no tag, GitHub Release, or public artifact has been created. This blocks
-  distribution and remains an owner decision, not evidence for a version
-  declaration.
+- CI run #68 on the MIT-license commit passed on Ubuntu, macOS, and Windows.
+  CI run #69 passed on all three platforms after the release publisher gained
+  a full-history checkout required by `--notes-from-tag`.
+- The tag-only release workflow passed end-to-end on run #2
+  (`37034442821`): preflight, release preparation, all native builds, and
+  aggregate publication passed. It created GitHub Release ID `401984860`
+  ([v0.1.0](https://github.com/OG-Huzzi/Rewind/releases/tag/v0.1.0)). The
+  first run failed only at publication because its job had no `.git` checkout;
+  the exact cause and no-consumer re-tag are recorded in `.ai/TEST_STATUS.md`.
+- All three release assets were downloaded. Linux
+  `rewind-v0.1.0-x86_64-unknown-linux-gnu.tar.gz` and macOS
+  `rewind-v0.1.0-aarch64-apple-darwin.tar.gz` were verified by archive listing
+  only. Windows `rewind-v0.1.0-x86_64-pc-windows-msvc.zip` was listed,
+  extracted, and smoke-tested on Windows with version, init, capture, and
+  undo; recovery also reported HEALTHY.
+- The owner-selected license gate is resolved. No 1.0 declaration is made;
+  the owner still decides whether `1.0.0` accurately communicates maturity
+  after considering the verified capabilities and deferred items.
 
 ## Limits and owner decisions
 
@@ -57,10 +69,10 @@ owner decides whether and when to declare `1.0.0`.
 - POSIX xattrs, directory DACLs/streams, ownership, SACLs, sparse layout,
   macOS flags, broader package ecosystems, and subproject lockfiles remain
   deferred as documented with their probe or scope blockers.
-- A licensed tagged build, archive inspection, and installed-binary smoke
-  tests from each platform archive remain outstanding.
-- The owner must decide the license and provide its file, decide whether
-  `1.0.0` accurately communicates the project's maturity, and separately
-  supply a crates.io publishing token if that distribution path is wanted.
+- Deferred capability classes remain as listed above; each needs evidence
+  and a contract amendment before implementation.
+- The owner must decide whether `1.0.0` accurately communicates maturity and
+  separately supply a crates.io publishing token if that distribution path
+  is wanted.
 
 No version change should be made from this evidence file alone.

@@ -1,54 +1,70 @@
 # Phase 7 Test Status
 
 Contract: `.ai/PHASE_7_RELEASE.md` (AC1–AC12); decision: ADR-023.
+Status: MIT-licensed `v0.1.0` release verified on 2026-10-02.
 
 Local environment: Windows, `stable-x86_64-pc-windows-gnu`, NTFS. The
-default MSVC Rust toolchain cannot link on this host because `link.exe` is
-absent; this does not affect hosted Windows CI, which uses MSVC.
+default MSVC Rust toolchain lacks `rustfmt` and cannot link here because
+`link.exe` is absent; hosted Windows CI uses MSVC.
 
-- `cargo fmt --all -- --check`: PASS.
+- `cargo +stable-x86_64-pc-windows-gnu fmt --all -- --check`: PASS. The
+  unqualified `cargo fmt --all -- --check` could not run because `rustfmt`
+  is not installed for the default MSVC toolchain.
 - `cargo check --all-targets`: PASS.
-- `cargo clippy --all-targets --color never -- -D warnings`: PASS.
-- `cargo test --color never`: 188 passed / 0 failed on two consecutive
-  final-source runs (71 library unit tests plus 117 integration tests;
-  binary and doc-test harnesses contain no tests).
-- Incident history retained: an earlier full-suite run passed, then the
-  next two full-suite attempts reported
-  `passive_observations_and_capture_failures_carry_no_evidence` failing in
-  `tests/phase6_recipes` and the Windows process exited with
-  `0xc0000374 STATUS_HEAP_CORRUPTION`. The test passed alone; the complete
-  Phase 6 test binary passed with `--nocapture` and `--test-threads=1`; and
-  three subsequent standard runs of that integration binary passed. The two
-  complete final-source runs above also passed. No root cause was found, so
-  this is an unexplained local process failure, not a diagnosed flake.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --all-targets --all-features
+  --color never -- -D warnings`: PASS.
+- `cargo +stable-x86_64-pc-windows-gnu test --color never`: 188 passed / 0
+  failed (71 library unit tests and 117 integration tests; binary and
+  doc-test harnesses contain no tests).
+- The owner selected MIT (SPDX `MIT`), copyright `Copyright (c) 2026
+  OG-Huzzi`. `LICENSE`, `license = "MIT"`, and `/LICENSE` in the package
+  allowlist agree. Clean `cargo package --list` includes `LICENSE`, Cargo
+  metadata, README, lockfile, and `src/**`; no `.ai/`, tests, examples,
+  integrations, or workflow files are packaged.
+- Fresh-root Cargo source install succeeded. The binary reported
+  `rewind 0.1.0`; `init`, capture, undo, and recovery passed with its external
+  store outside the workspace. An initial smoke setup put the store inside
+  the workspace and was correctly refused; the corrected setup passed with
+  no product changes.
 - CLI audit: all 30 visible root/nested help pages exited 0; `--version`
   printed `rewind 0.1.0`. `show` without an ID, `inspect history --limit
   nope`, and `inspect history --json nope` returned readable usage errors
   (exit 2). `status` outside an initialized workspace and `init` with a
   nonexistent path returned readable errors (exit 1); the nonexistent path
   was not created. No panic was observed.
-- Fresh-root source install and README PowerShell quick start passed:
-  version, init, capture, status, undo, redo, list, show, and recovery.
-  Undo removed the created file; redo restored it; recovery reported a
-  healthy workspace with no unfinished transaction.
-- `cargo package --list`: PASS with the expected warning that no license or
-  license-file is specified. Entries are limited to `.cargo_vcs_info.json`,
-  `Cargo.lock`, `Cargo.toml`, `Cargo.toml.orig`, `README.md`, and `src/**`.
-  No `.ai/`, tests, examples, integrations, or workflow files are packaged.
-- Release workflow YAML parsed and static assertions passed: only the `v*`
-  tag trigger, full 40-character action SHAs, all three native runner jobs,
-  quality gates before build, and one aggregated release job. No
-  `actionlint` binary was available. Release workflow was not run because
-  the owner license gate prohibits creating a tag.
-- GitHub Actions CI run #65, push commit
-  `6591600c105d33372de91b183f6a09341c5189f1`, completed successfully on
-  Ubuntu, macOS, and Windows: [run details](https://github.com/OG-Huzzi/Rewind/actions/runs/37026986787).
-  Each platform passed format, all-target check, Clippy with warnings
-  denied, and the full suite. A fresh clone of the pushed commit installed
-  locally and passed the README quick start through recovery.
-- The release workflow itself remains unrun because no tag is permitted
-  before the owner license gate is resolved. No tag, Release, or public
-  artifact exists.
+- Incident history retained: an earlier full-suite run passed, then the
+  next two full-suite attempts reported
+  `passive_observations_and_capture_failures_carry_no_evidence` failing in
+  `tests/phase6_recipes` and the Windows process exited with
+  `0xc0000374 STATUS_HEAP_CORRUPTION`. The test passed alone; the complete
+  Phase 6 test binary passed with `--nocapture` and `--test-threads=1`; three
+  subsequent standard runs of that integration binary passed; and two full
+  final-source runs passed. No root cause was found.
+- Static workflow review confirmed the `v*` tag trigger, full-SHA action
+  pins, three native runner jobs with quality gates before builds, and one
+  aggregated release job. No `actionlint` binary was available.
+- CI run #68 (`37031337723`) for license commit `5d7ed0d` passed on Ubuntu,
+  macOS, and Windows. Release publisher fix commit `d9c44d2` added a
+  full-history checkout for `gh release create --notes-from-tag`; CI run #69
+  (`37033749459`) passed on all three platforms.
+- Release workflow run #1 (`37032073015`) passed preflight, preparation,
+  and all three build jobs, then failed at publish. Its downloaded job log
+  reported `failed to run git: fatal: not a git repository` because the
+  publisher had no checkout. No Release or assets were created. After
+  confirming there were no external consumers or Release, the original
+  `v0.1.0` tag was deleted and recreated as an annotated tag on `d9c44d2`.
+- Release workflow run #2 (`37034442821`) passed preflight, preparation,
+  Ubuntu, macOS, Windows, and publish. GitHub Release ID `401984860` is
+  [published](https://github.com/OG-Huzzi/Rewind/releases/tag/v0.1.0).
+  All three assets were downloaded and their sizes matched the release API:
+
+  | Asset | Size | Verification performed |
+  |---|---:|---|
+  | `rewind-v0.1.0-x86_64-unknown-linux-gnu.tar.gz` | 2,272,437 bytes | Archive listing only: `rewind`, `INSTALL.txt`. |
+  | `rewind-v0.1.0-aarch64-apple-darwin.tar.gz` | 1,973,646 bytes | Archive listing only: `rewind`, `INSTALL.txt`. |
+  | `rewind-v0.1.0-x86_64-pc-windows-msvc.zip` | 2,005,381 bytes | Listed and extracted; Windows smoke passed for version, init, capture, undo, and recovery (`HEALTHY`). |
+
+  The Windows capture/undo smoke confirmed the created file was removed.
 
 # Phase 1 Test Status
 

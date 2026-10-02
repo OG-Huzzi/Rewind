@@ -1,8 +1,9 @@
 # Engineering Roadmap
 
-Status: Phases 1–7 release preparation implemented and CI-verified. Public
-publishing remains blocked until the owner supplies a license file and
-matching Cargo metadata. See `.ai/PHASE_7_RELEASE.md`.
+Status: Phases 1–7 delivered and CI-verified. The MIT-licensed `v0.1.0`
+release is published and verified on Linux, macOS, and Windows. Remaining
+items are owner decisions on `1.0.0` and optional crates.io publication.
+See `.ai/PHASE_7_RELEASE.md`.
 
 ## 1. Phase strategy
 
@@ -116,21 +117,20 @@ depth policy), and any restore or re-run semantics for package actions.
 
 ## 9. Phase 7 - Release engineering
 
-Preparation delivered: accurate package metadata and crate allowlist, an
-evidence-linked user README, complete CLI help descriptions, and a
-tag-triggered three-platform release workflow. Local release-preparation
-gates pass; the full 188-test suite passed twice consecutively, with an
-earlier unexplained Windows GNU `STATUS_HEAP_CORRUPTION` retained in the
-test record. CI run #65 on commit `6591600` is green on Ubuntu, macOS, and
-Windows ([run details](https://github.com/OG-Huzzi/Rewind/actions/runs/37026986787)).
+Delivered and verified: MIT license metadata and file, restricted crate
+contents, evidence-linked README, truthful CLI help, and a tag-only release
+workflow. The first release workflow attempt exposed a missing checkout for
+`--notes-from-tag`; that failure is recorded with its log evidence, fixed on
+`main`, and re-tagged only after confirming no Release existed. The retry
+published the three verified `v0.1.0` archives (release run #2). The full
+188-test suite passed locally; CI runs #68 and #69 passed on all three
+platforms. A prior unexplained Windows GNU `STATUS_HEAP_CORRUPTION` remains
+in the test record.
 
-The GitHub Release is blocked until the owner supplies legal terms and an
-actual license file. Do not create the intended `v0.1.0` annotated tag or
-publish artifacts before Cargo metadata names that license and the workflow
-preflight can confirm its file. The owner also decides whether to declare
-`1.0.0`; technical evidence is collected in
-`.ai/RELEASE_1_0_EVIDENCE.md`. Crates.io remains deferred until an owner
-publishing token is supplied.
+The owner alone decides whether to declare `1.0.0`; technical evidence and
+deferred scope are collected in `.ai/RELEASE_1_0_EVIDENCE.md`. Crates.io
+publication remains optional and deferred until the owner supplies a
+publishing token.
 
 Further capability expansion remains possible but requires a new contract
 amendment with a capability-matrix update before implementation, and—for

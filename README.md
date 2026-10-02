@@ -103,13 +103,15 @@ GitHub CI also builds the Windows MSVC target.
 
 ### Tagged release binaries
 
-No release binaries are published while the owner license decision is
-unresolved. Once a release is authorized, choose the archive whose Rust target
-matches your platform. Unix archives use
-`rewind-v<version>-<rust-target>.tar.gz`; Windows archives use
-`rewind-v<version>-<rust-target>.zip`. Each contains the binary and an
-`INSTALL.txt` with extraction and PATH instructions. The exact asset links
-will be added only after a real tagged release has produced and verified them.
+The [Rewind v0.1.0 release](https://github.com/OG-Huzzi/Rewind/releases/tag/v0.1.0)
+provides these platform builds:
+
+- Windows x86_64 MSVC: [rewind-v0.1.0-x86_64-pc-windows-msvc.zip](https://github.com/OG-Huzzi/Rewind/releases/download/v0.1.0/rewind-v0.1.0-x86_64-pc-windows-msvc.zip)
+- macOS ARM64: [rewind-v0.1.0-aarch64-apple-darwin.tar.gz](https://github.com/OG-Huzzi/Rewind/releases/download/v0.1.0/rewind-v0.1.0-aarch64-apple-darwin.tar.gz)
+- Linux x86_64 GNU: [rewind-v0.1.0-x86_64-unknown-linux-gnu.tar.gz](https://github.com/OG-Huzzi/Rewind/releases/download/v0.1.0/rewind-v0.1.0-x86_64-unknown-linux-gnu.tar.gz)
+
+Choose the archive whose Rust target matches your platform. Each contains
+the binary and an `INSTALL.txt` with extraction and PATH instructions.
 
 ## Quick start
 

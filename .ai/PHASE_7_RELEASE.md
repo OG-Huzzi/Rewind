@@ -1,9 +1,9 @@
 # Phase 7 Contract — Release Engineering
 
-Status: **PREPARATION IMPLEMENTED; RELEASE BLOCKED pending the owner's license decision.**
-The repository contains no license file. Preparation that does not select a
-license or publish artifacts may proceed; no release tag or GitHub Release is
-permitted until the owner supplies a license file and matching Cargo metadata.
+Status: **RELEASED AND VERIFIED** — owner-selected MIT license, annotated
+`v0.1.0` tag, and three-platform GitHub Release completed on 2026-10-02.
+The owner supplied the license choice; the package metadata, release workflow,
+and published assets were verified as recorded in §9.
 
 ## 0. Verified baseline and readiness audit
 
@@ -213,29 +213,40 @@ and using floating action branches/tags without a full-SHA review.
 Consequences: product behavior and runtime dependencies stay unchanged;
 packaged source is intentionally narrower than the repository; releases are
 host-native binaries and do not claim signing/notarization; crates.io remains
-deferred pending an owner token; and the absence of a license blocks public
-release until resolved.
+deferred pending an owner token; and public distribution uses the
+owner-selected MIT terms recorded in `LICENSE` and Cargo metadata.
 
 Revert by reverting the release workflow/metadata/README commits and this
 contract/ADR in reverse order. If a tag was created, delete its GitHub Release
 and tag only when it has no external consumers; assets can be rebuilt from the
 same source commit. Never rewrite branch history or force-push.
 
-## 9. Execution record and current gate
+## 9. Execution record and final status
 
-Preparation is implemented on `main` through the Phase 7 commit series. The
-contract and ADR-023 preceded production metadata, README, CLI-help, and
-workflow edits. The manifest has no `license` or `license-file` field, and
-the README names the owner decision explicitly. The tag workflow checks for
-both an owner-selected manifest license and an existing license file before
-it deletes any old same-tag Release or starts a build.
+The owner selected MIT (SPDX `MIT`) with copyright `Copyright (c) 2026
+OG-Huzzi`. `LICENSE` contains the OSI text and that owner-supplied line;
+`Cargo.toml` declares `license = "MIT"` and includes `/LICENSE`; the README
+points to the license and links the released target archives. The contract
+and ADR-023 preceded all production metadata, README, and workflow edits.
+`cargo package --list` includes `LICENSE` and only the declared files plus
+Cargo-generated metadata.
 
-Local results on Windows with `stable-x86_64-pc-windows-gnu`:
+Local verification on Windows with `stable-x86_64-pc-windows-gnu`:
 
-- `cargo fmt --all -- --check`, `cargo check --all-targets`, and
-  `cargo clippy --all-targets --color never -- -D warnings`: pass.
-- `cargo test --color never`: 188 passed / 0 failed on two consecutive
-  runs (71 unit tests and 117 integration tests each run).
+- `cargo +stable-x86_64-pc-windows-gnu fmt --all -- --check`: pass. The
+  unqualified `cargo fmt --all -- --check` could not run because `rustfmt`
+  is not installed for the default MSVC toolchain.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --all-targets --all-features
+  --color never -- -D warnings`: pass.
+- `cargo +stable-x86_64-pc-windows-gnu test --color never`: 188 passed / 0
+  failed (71 unit tests and 117 integration tests).
+- `cargo package --list`: pass; contains `LICENSE`, Cargo metadata, README,
+  lockfile, and `src/**` only.
+- Source installation into a fresh `--root` succeeded. The installed binary
+  reported `rewind 0.1.0`; `init`, capture, undo, and recovery passed with the
+  external store outside the workspace. An initial smoke setup put that
+  store inside the workspace and was correctly refused; the corrected setup
+  passed without product changes.
 - A preceding full-suite attempt failed in the Phase 6 passive-observation
   test process with Windows `0xc0000374 STATUS_HEAP_CORRUPTION`. The exact
   test and full Phase 6 binary passed in isolation; three repeated Phase 6
@@ -248,23 +259,30 @@ Local results on Windows with `stable-x86_64-pc-windows-gnu`:
   `status` outside an initialized workspace and `init` with a nonexistent
   path return readable errors (exit 1); the nonexistent path is not created.
   No panic was observed.
-- Source installation into a fresh temporary root and the README PowerShell
-  quick start passed: init, capture, undo, redo, list/show, and recovery.
-- `cargo package --list` succeeds with Cargo's expected missing-license
-  warning and contains only the manifest, lockfile, README, `src/**`, and
-  Cargo-generated package metadata.
-- Static workflow review confirms a `v*` tag-only trigger, full-SHA action
-  pins, three native runner jobs with the CI gates before builds, and one
-  aggregated Release job. The workflow has not run because no tag is
-  permitted while the license gate is unresolved.
-- The pushed implementation commit `6591600c105d33372de91b183f6a09341c5189f1`
-  passed CI run #65 on Ubuntu, macOS, and Windows; see
-  [the run](https://github.com/OG-Huzzi/Rewind/actions/runs/37026986787).
-  A fresh clone of that commit also installed into an empty temporary root,
-  reported `rewind 0.1.0`, and passed the README quick start through healthy
-  recovery.
+- CI run #68 (`37031337723`) for the MIT commit `5d7ed0d` passed on Ubuntu,
+  macOS, and Windows. After the first release attempt exposed a missing
+  checkout, commit `d9c44d2` added a full-history, full-SHA-pinned checkout
+  to the publisher; CI run #69 (`37033749459`) passed on all three platforms.
+- The first release workflow run #1 (`37032073015`) passed preflight,
+  preparation, and all three platform builds, then failed in the aggregate
+  publish job. Its log said `failed to run git: fatal: not a git repository`
+  because `gh release create --notes-from-tag` ran without a checkout. The
+  failed run created no GitHub Release or assets. With no external consumers,
+  the initial `v0.1.0` tag was deleted and recreated as an annotated tag on
+  `d9c44d2`; the release retry followed the contract's re-tag rule.
+- Release workflow run #2 (`37034442821`) passed preflight, preparation,
+  Ubuntu, macOS, Windows, and publish. GitHub Release ID `401984860` is
+  published at
+  [v0.1.0](https://github.com/OG-Huzzi/Rewind/releases/tag/v0.1.0), with
+  exactly these assets:
 
-The remaining release gates are owner-supplied license terms and matching
-manifest metadata, then—only after the license gate is resolved—the
-annotated `v0.1.0` tag and artifact/Release verification. No tag, Release,
-or public binary artifact has been created.
+  | Artifact | Download and verification |
+  |---|---|
+  | `rewind-v0.1.0-x86_64-unknown-linux-gnu.tar.gz` | Downloaded; archive listing only: `rewind`, `INSTALL.txt`. |
+  | `rewind-v0.1.0-aarch64-apple-darwin.tar.gz` | Downloaded; archive listing only: `rewind`, `INSTALL.txt`. |
+  | `rewind-v0.1.0-x86_64-pc-windows-msvc.zip` | Downloaded and listed (`rewind.exe`, `INSTALL.txt`); extracted and smoke-tested on Windows: version, init, capture, undo, recovery all passed. |
+
+The owner-selected license gate is resolved. Remaining separate owner
+decisions are whether to declare `1.0.0` based on
+`.ai/RELEASE_1_0_EVIDENCE.md` and whether to supply a crates.io publishing
+token. Neither is required to use the verified `v0.1.0` GitHub Release.

@@ -679,3 +679,15 @@ the phase can prepare and validate the workflow and documentation but cannot
 claim a published release. Product behavior and runtime dependencies do not
 change. The crate archive becomes an explicit user-facing package boundary;
 the owner-supplied license must be added to its allowlist when chosen.
+
+### Outcome (2026-10-02)
+
+The owner selected MIT (SPDX `MIT`) with copyright `Copyright (c) 2026
+OG-Huzzi`. Commit `5d7ed0d` added the canonical `LICENSE`, matching Cargo
+metadata and package allowlist entry, and README license notices. The
+annotated `v0.1.0` tag and three-platform release were then published and
+verified. The first release run exposed that `gh release create
+--notes-from-tag` needs a checked-out repository; commit `d9c44d2` added a
+full-history checkout, CI run #69 passed, and release workflow run #2
+completed successfully. Detailed evidence is in `.ai/PHASE_7_RELEASE.md`
+and `.ai/TEST_STATUS.md`.

@@ -1,32 +1,34 @@
 # Release Engineering Handoff
 
-Status: preparation is implemented on `main`; CI run #65 passed on Ubuntu,
-macOS, and Windows for commit `6591600`. Public release is blocked pending
-the owner's license choice, file, and matching manifest metadata. Do not
-create a tag or publish artifacts before that gate is met.
+Status: MIT-licensed `v0.1.0` is released and verified. The annotated tag
+points to `d9c44d2`; release run #2 passed all jobs and Release ID `401984860`
+contains the three platform archives. CI runs #68 and #69 passed on Ubuntu,
+macOS, and Windows. Full details and the first failed publisher attempt are
+in `.ai/TEST_STATUS.md` and `.ai/PHASE_7_RELEASE.md`.
 
 **Release invariants:**
 
-- Keep Cargo at `0.1.0`; the first intended annotated tag is `v0.1.0` only
-  after the license gate is met. Do not declare `1.0.0` without the owner's
-  explicit decision and review of `.ai/RELEASE_1_0_EVIDENCE.md`.
-- Until the owner supplies a license file, keep both `license` and
-  `license-file` absent from `Cargo.toml`; never infer MIT from the old
-  manifest value. Add the actual chosen file and metadata to the package
-  allowlist when the owner supplies them.
+- Keep Cargo at `0.1.0` for this release; any future tag must match the
+  manifest version. Do not declare `1.0.0` without the owner's explicit
+  decision and review of `.ai/RELEASE_1_0_EVIDENCE.md`.
+- The owner selected MIT. Keep the root `LICENSE`, `license = "MIT"`, and
+  `/LICENSE` in the Cargo package allowlist consistent; do not remove or
+  replace the license without a new owner decision.
 - `.github/workflows/release.yml` is tag-only and checks tag/version and
   license metadata/file before deleting an existing same-tag Release or
   building. Its three native jobs run fmt, check, Clippy with warnings
   denied, and tests before building. One job attaches all three archives.
 - Archive names are `rewind-v<version>-<rust-target>.tar.gz` on Linux/macOS
-  and `rewind-v<version>-<rust-target>.zip` on Windows. Do not hand-publish
-  artifacts or report a successful release until the workflow and archive
-  checks complete.
+  and `rewind-v<version>-<rust-target>.zip` on Windows. The `v0.1.0` assets
+  are linked in README and recorded in TEST_STATUS. Future releases must
+  use the workflow and pass archive checks.
 - Phase 7 local suite: 188/0 twice consecutively. A previous Windows GNU
   full-suite process ended with `STATUS_HEAP_CORRUPTION`; its cause is
-  unknown and the incident is documented in `.ai/TEST_STATUS.md`. CI run #65
-  passed on all three platforms:
-  https://github.com/OG-Huzzi/Rewind/actions/runs/37026986787.
+  unknown and the incident is documented in `.ai/TEST_STATUS.md`. The
+  `--notes-from-tag` checkout defect from release run #1 was fixed by adding
+  a full-history checkout to the publisher. If a future release fails,
+  inspect its actual logs and follow the no-consumer re-tag procedure in the
+  contract.
 
 The prior implementation handoff follows, preserving its invariants.
 
