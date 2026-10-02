@@ -12,6 +12,11 @@ use std::path::{Path, PathBuf};
 /// Writes a platform-native script under `scratch` and returns the argv
 /// that executes it. Windows bodies are `.cmd` files run through
 /// `cmd /C`; POSIX bodies are executable `.sh` files run directly.
+/// POSIX bodies MUST carry their own `#!/bin/sh` first line (see the
+/// foundation suite for the convention): a shebang-less script is not
+/// executable on Linux (ENOEXEC), and the fallback behavior for that
+/// case is not uniform across platforms — CI probed an honest skip-free
+/// failure there while macOS happened to run the file.
 pub fn shell_script(
     scratch: &Path,
     name: &str,

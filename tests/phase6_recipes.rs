@@ -87,7 +87,10 @@ fn verify_cas(fixture: &Fixture, hash: &str) {
 /// Writes a platform-native script (house convention: never inline shell
 /// commands) and returns the argv that runs it with the workspace root as
 /// its working directory. Scripts live outside the workspace so they never
-/// appear in the captured state.
+/// appear in the captured state. POSIX bodies always carry `#!/bin/sh`: a
+/// shebang-less script is not executable on Linux (CI probed ENOEXEC on
+/// ubuntu-latest while macOS happened to fall back), and the shebang makes
+/// the exec path deterministic on every POSIX platform.
 fn run_script(name: &str, windows_body: &str, posix_body: &str) -> Vec<String> {
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
     let scratch = std::env::temp_dir().join(format!(
@@ -96,7 +99,8 @@ fn run_script(name: &str, windows_body: &str, posix_body: &str) -> Vec<String> {
         COUNTER.fetch_add(1, Ordering::SeqCst)
     ));
     fs::create_dir_all(&scratch).expect("script scratch dir");
-    common::shell_script(&scratch, name, windows_body, posix_body)
+    let posix_body = format!("#!/bin/sh\n{posix_body}");
+    common::shell_script(&scratch, name, windows_body, &posix_body)
 }
 
 fn write_file_script(name: &str, file: &str, content: &str) -> Vec<String> {
@@ -428,22 +432,46 @@ fn passive_observations_and_capture_failures_carry_no_evidence() {
         .catalog
         .list_operations(fixture.workspace.id)
         .expect("operations");
-    let passive = operations
+    let observed = operations
         .iter()
         .find(|entry| entry.command.as_deref() == Some("external-lockfile-change"))
-        .expect("passive observation recorded");
-    assert_eq!(passive.kind, OperationKind::PassiveObservation);
-    assert!(
-        passive
-            .effects
-            .iter()
-            .any(|effect| effect.path == "Cargo.lock"),
-        "the passive observation saw the lockfile change"
-    );
-    assert!(
-        passive.evidence.is_empty(),
-        "passive observations are low-confidence boundaries, not evidence"
-    );
+        .expect("the post-hook recorded the boundary's outcome");
+    // The post-hook scan is bounded by a 50 ms deadline (Phase 1.3): on a
+    // loaded runner it may exceed the budget and land in the documented
+    // conservative CaptureFailed model instead of recording the
+    // observation (probed on windows-latest CI). Both outcomes are
+    // contract behavior, and the Phase 6 property holds for either — a
+    // non-strong operation never carries evidence. The kind-conditional
+    // assertions pin each documented path.
+    match &observed.kind {
+        OperationKind::PassiveObservation => {
+            assert!(
+                observed
+                    .effects
+                    .iter()
+                    .any(|effect| effect.path == "Cargo.lock"),
+                "the passive observation saw the lockfile change"
+            );
+            assert!(
+                observed.evidence.is_empty(),
+                "passive observations are low-confidence boundaries, not evidence"
+            );
+        }
+        OperationKind::CaptureFailed => {
+            assert!(
+                observed.error.is_some(),
+                "a capture failure must record why it degraded"
+            );
+            assert!(
+                observed.evidence.is_empty(),
+                "a failed capture proves nothing and records no evidence"
+            );
+        }
+        other => panic!(
+            "the post-hook must record a passive observation or a capture \
+             failure, got {other:?}"
+        ),
+    };
 
     // The shared capture-failure path records no evidence either.
     let baseline = fixture.workspace.baseline_id().expect("baseline");
