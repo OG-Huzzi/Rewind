@@ -4,10 +4,7 @@ Rewind records filesystem states around commands run inside an explicitly
 initialized workspace, so supported, known local changes can be inspected and
 conditionally undone or redone.
 
-> **License decision pending.** There is currently no license file in this
-> repository. The owner must choose and supply one before a public binary
-> release. The old `MIT` manifest claim has been removed; no license is implied
-> by this README.
+> **MIT License — see [LICENSE](LICENSE).** SPDX identifier: `MIT`.
 
 ## What Rewind records
 
@@ -139,7 +136,6 @@ including `inspect`, `plan`, `apply`, and the advisory `watch` commands.
 
 ## License
 
-**Owner decision required:** no license file is present yet. The README,
-manifest, and any release archives must be updated to match the license file
-the owner chooses. Crates.io publication also remains deferred until the owner
-provides a publishing token.
+MIT License — see [LICENSE](LICENSE). SPDX identifier: `MIT`.
+Crates.io publication remains deferred until the owner provides a publishing
+token.

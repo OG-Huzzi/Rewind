@@ -3,12 +3,13 @@ name = "rewind"
 version = "0.1.0"
 edition = "2021"
 description = "Conservative local workspace filesystem state capture and recovery."
+license = "MIT"
 repository = "https://github.com/OG-Huzzi/Rewind"
 readme = "README.md"
 keywords = ["filesystem", "workspace", "recovery", "undo"]
 categories = ["command-line-utilities", "filesystem"]
 rust-version = "1.98.1"
-include = ["/Cargo.toml", "/Cargo.lock", "/README.md", "/src/**"]
+include = ["/Cargo.toml", "/Cargo.lock", "/LICENSE", "/README.md", "/src/**"]
 
 [dependencies]
 blake3 = "1.5"
