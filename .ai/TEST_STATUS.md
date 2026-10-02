@@ -1,7 +1,98 @@
 # Phase 1 Test Status
 
-Status after the Phase 5 close-out (CI stabilization). Newer records
-are at the top; earlier phase records are preserved below.
+Status after the Phase 6 evidence layer. Newer records are at the top;
+earlier phase records are preserved below.
+
+## Phase 6 (manifest/lockfile evidence layer)
+
+Contract: `.ai/PHASE_6_RECIPES.md` (AC1–AC10); decision: ADR-022.
+
+Local suite on Windows (x86_64-pc-windows-gnu, Rust 1.98.1, debug, NTFS):
+`cargo fmt --all -- --check` PASS, `cargo check --all-targets` PASS,
+`cargo clippy --all-targets --all-features -- -D warnings` PASS, and
+`cargo test --all-targets` **187 passed / 0 failed, twice consecutively** —
+61→70 lib (9 new recipes unit tests), 10 boundary_correlation, 13
+foundation, 8 hardening, 15 phase2_dependency, 17 phase3_watcher, 7
+phase4_timeline, 16 phase5_platform, **12 phase6_recipes** (all new), 3
+rollback_path_scan, 8 rollback_tree, 8 shell_integration. Every existing
+suite unchanged and green.
+
+New Phase 6 tests (all driving the real capture/undo/redo machinery unless
+noted):
+
+- `recipes::tests::*` (9 lib unit tests, all platforms): the three
+  transitions with recorded hashes, same-hash no-change policy,
+  manifest-only policy, root-only/nested/similar-name suppression, exact
+  case rules, non-regular object suppression, manifests-recorded-when-
+  present, deterministic ordering across all six kinds, npm shrinkwrap as
+  a second npm lockfile name.
+- `phase6_recipes::lockfile_lifecycle_yields_evidence_with_verifiable_hashes`
+  (AC1+AC3): created/changed/removed through real capture, hashes verified
+  against the CAS.
+- `phase6_recipes::no_false_positives_for_nested_similar_or_deviating_names`
+  (AC2+AC4): nested `sub/Cargo.lock`, `.bak`/`.old` names, unrecognized
+  `Gemfile.lock`, deviating casing (`cargo.lock` recognized nowhere),
+  directory-at-lockfile-name and file→directory replacement (suppressed,
+  never guessed).
+- `phase6_recipes::same_hash_rewrites_and_manifest_only_changes_are_not_evidence`
+  (AC3 boundary): byte-identical rewrite and manifest-only edit yield no
+  entry.
+- `phase6_recipes::every_recognized_kind_is_derived_through_real_capture`
+  (AC1): all six kinds in one capture, documented manifests per kind,
+  deterministic lockfile-path ordering, CAS verification.
+- `phase6_recipes::passive_observations_and_capture_failures_carry_no_evidence`
+  (AC5): a real `hook pre`/`hook post` flow whose observed change is a
+  lockfile change still records no evidence; the shared
+  `record_capture_failure` path likewise.
+- `phase6_recipes::legacy_catalogs_gain_the_table_idempotently_and_rows_read_unchanged`
+  (AC6): pre-phase catalog simulated by dropping `operation_evidence`;
+  reopen recreates it idempotently; legacy rows read and display
+  byte-identically (field skipped in `show`); new captures work; a
+  malformed blob is an explicit error.
+- `phase6_recipes::presentation_renders_evidence_and_evidence_free_output_is_unchanged`
+  (AC7): `list`/`show`/timeline human + JSON render evidence for stores
+  that contain it (names only in human surfaces; hashes in JSON), and
+  evidence-free stores are byte-identical to the pre-phase form on every
+  surface, including `inspect history --json`.
+- `phase6_recipes::timeline_json_is_byte_identical_for_evidence_bearing_and_free_stores`
+  (AC7): Phase 4 AC3 determinism extended; the range is computed from the
+  recorded operation times (clock-independent, per the adversarial
+  review — see below).
+- `phase6_recipes::undo_and_redo_are_unaffected_by_recorded_evidence`
+  (AC8): undo/redo restore exact states; the evidence record is unchanged
+  by either direction; workspace stays HEALTHY.
+- `phase6_recipes::real_cargo_action_yields_evidence_with_verifiable_hashes`
+  (AC9): captured `cargo generate-lockfile --offline` (probed offline-safe,
+  no dependencies) yields added evidence; after a captured manifest
+  rewrite, a second run yields the changed transition; hashes verified
+  against the CAS.
+- `phase6_recipes::real_npm_action_yields_evidence_with_verifiable_hashes`
+  (AC9): captured `npm install --package-lock-only --ignore-scripts
+  --offline --no-audit --no-fund` (probed offline-safe with a blackholed
+  registry for a zero-dependency project) yields added evidence, then the
+  changed transition after a version bump.
+- `phase6_recipes::evidence_hashes_are_the_recorded_fingerprint_ids`
+  (AC1): the evidence presents exactly the recorded fingerprint CAS ids.
+
+Adversarial review of the slice diff (contract §8 Step 5) answered every
+prompt question and found two test-side defects, both fixed (`8002933`):
+the determinism test's fixed calendar range would have rotted in 2027
+(environment dependence — replaced with recorded-time-derived ranges),
+and `inspect history --json` was an untested machine surface (now
+covered both ways). No production code changed in the review.
+
+Platform gaps (disclosed, not passing claims): the real-manager tests
+execute wherever the tool exists — cargo on all three CI runners (the CI
+itself installs Rust), npm on all three runners; on a host without the
+tool the test reports an honest skip. go has no offline-safe
+evidence-producing operation (probed: local `replace` writes no `go.sum`;
+sums exist only for fetched modules), so go recognition is covered
+file-based and by the recorded probe; pnpm/uv/pip recognition is covered
+file-based and by the recorded probes, with no real-manager CI test.
+
+CI (GitHub Actions, `OG-Huzzi/Rewind`, fmt/check/clippy -D warnings/test
+on ubuntu-latest, macos-latest, windows-latest): **recorded below after
+verification** — pending at the time of this record.
 
 ## Phase 5 close-out / CI stabilization
 

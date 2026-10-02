@@ -1,5 +1,31 @@
 # Phase 3 Implementation Handoff
 
+**Phase 6 evidence-layer invariants (do not regress):** recognition
+(`src/recipes.rs::derive_evidence`) is a **pure function of the recorded
+pre/post manifests** — no filesystem access, no scans, no CAS reads or
+writes, no second hashing, no lockfile parsing. The evidence presents only
+the manifests' existing `RegularFile` CAS ids; it can never claim package
+names, versions, registry, cache, or any state outside the recorded
+workspace, and it never claims a package action is reversible as a package
+action (ADR-016's rejection stands; ADR-022 delivers only the unlock
+condition ADR-016 named). The recognized set is exact, workspace-root-
+relative, and case-sensitive on every platform — a deviating casing is
+recognized nowhere; do not add case folding, depth walking, or unprobed
+ecosystems without a contract amendment. Same-hash rewrites and
+manifest-only changes produce no entry; non-regular lockfile objects are
+suppressed, never guessed. Evidence exists only for strongly captured
+commands: capture-failure, passive-observation, boundary-only, and restore
+drafts carry none. The `operation_evidence` row is written in the same
+SQLite transaction as its operation (duplicates structurally impossible)
+and only when non-empty; a present-but-unparseable blob is an explicit
+read error, never silently emptied. Serialization skips the field when
+empty so pre-phase records and evidence-free stores render byte-
+identically on every surface (`show`, `inspect history --json`, timeline
+human + JSON); `TIMELINE_SCHEMA_VERSION` stays 1 because a bump would
+change byte-output for evidence-free stores. Presentation (`list`/
+timeline human) renders names only — hashes live in the JSON surfaces.
+`diff` and `ui` are intentionally unchanged.
+
 **Close-out invariants (do not regress):** `HOOK_LEASE_RETRY` is
 env-tunable via `REWIND_HOOK_LEASE_RETRY_MS` (default 2000 ms, clamped to
 600000) — a starvation-avoidance tuning knob, never a wall-time promise;

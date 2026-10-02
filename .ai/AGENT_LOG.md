@@ -1,5 +1,40 @@
 # Agent Log
 
+## Phase 6 (manifest/lockfile evidence layer) — executed
+
+- Baseline verified: `main` at `77567e9` = `origin/main`, tree clean; CI
+  green on the baseline (check-runs read via the public API); local suite
+  166/0. Push access confirmed by dry-run.
+- Audit reconciled a documented-vs-code discrepancy: the repository has no
+  schema-migration mechanism (Phase 2 recorded this); Phase 4's
+  `created_at` was never an additive migration — it existed since the
+  initial schema. The established extension pattern is the idempotent
+  `CREATE TABLE IF NOT EXISTS` DDL in `Catalog::initialize()`; Phase 6
+  follows it (no `ALTER TABLE`).
+- Probes executed on the host (Windows 11, NTFS) and recorded in the
+  contract §3: cargo 1.98.1, npm 11.6.2, pnpm 11.3.0, go 1.26.5, python
+  3.14.4/pip 26.2.1, uv 0.11.26; each manager's real operation observed
+  inside a Rewind capture (lockfiles appear as ordinary RegularFile
+  entries); offline-safe variants probed; the npm probe's nested
+  `node_modules/.package-lock.json` is the depth-policy witness. Not
+  installed: yarn, bun, poetry, pipenv → those ecosystems stay
+  unrecognized (no-guess rule).
+- Contract `.ai/PHASE_6_RECIPES.md` + ADR-022 committed (`e2d18b1`)
+  before any production code; pushed.
+- Implementation commit `94adeaa`: `src/recipes.rs` (pure recognition),
+  `RecipeKind`/`RecipeEvidence` in model.rs, `operation_evidence` table +
+  transactional writes + reads in db.rs, capture integration in
+  workspace.rs, presentation in cli.rs/timeline.rs (schema version
+  deliberately kept at 1). Test commit in the same push:
+  `tests/phase6_recipes.rs` (12 integration tests incl. real-manager
+  cargo+npm with CAS-verified hashes and honest tool-absent skips).
+- Review fix `8002933`: clock-independent determinism ranges (the fixed
+  calendar range would have rotted in 2027) and the missing
+  `inspect history --json` surface assertions. No production change.
+- Gates: fmt/check/clippy `-D warnings` green; full suite 187/0 twice
+  consecutively. CI verification pending at commit time; to be recorded
+  in TEST_STATUS.md.
+
 ## Phase 5 close-out / CI stabilization — executed
 
 - Contract `.ai/PHASE_5_CLOSEOUT.md` committed (`8617948`) before code.

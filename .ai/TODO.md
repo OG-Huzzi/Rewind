@@ -45,3 +45,27 @@
       xattrs (blocked: no POSIX probe host — no WSL/Docker on the working
       machine); owner/group and SACL (privilege-bound); sparse-file layout;
       chflags (no macOS host).
+
+# Phase 6 TODO
+
+- [x] Contract `.ai/PHASE_6_RECIPES.md` + ADR-022 committed before any
+      production code.
+- [x] Probes: cargo/npm/pnpm/go/python+pip/uv real operations recorded,
+      including offline-safe variants and the nested
+      `node_modules/.package-lock.json` depth-policy witness.
+- [x] Evidence layer: pure recognition (`src/recipes.rs`), additive
+      `operation_evidence` persistence via the established idempotent DDL
+      pattern, capture-side integration, presentation on
+      list/show/timeline with byte-identical unchanged-output guarantees.
+- [x] Tests: 9 unit + 12 integration (file-based lifecycle, no-false-
+      positives, all six kinds, passive/failure boundaries, legacy-catalog
+      migration, presentation, determinism, undo/redo, real-manager
+      cargo+npm); full suite 187/0 twice consecutively; all local gates
+      green.
+- [x] Adversarial review completed; two test-side findings fixed.
+- [ ] CI verification on ubuntu/macOS/windows for the phase commit
+      (recorded in TEST_STATUS.md once observed).
+- [ ] Deferred (unchanged, still deferred): unprobed ecosystems (yarn,
+      bun, poetry, Pipfile, Gemfile, composer, …) and monorepo
+      sub-project lockfiles — each requires probe evidence and a contract
+      amendment; package-transaction semantics remain rejected (ADR-016).

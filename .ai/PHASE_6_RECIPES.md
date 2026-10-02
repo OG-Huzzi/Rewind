@@ -1,8 +1,10 @@
 # Phase 6 Contract — Ecosystem Recipes: Manifest/Lockfile Evidence Layer
 
-Status: **IMPLEMENTED** (commits on `main`; CI verification recorded in
-TEST_STATUS.md after it is observed). The pre-implementation contract text
-below is preserved; status changes only with evidence.
+Status: **IMPLEMENTED** (commits `94adeaa` + `8002933` on `main`; local
+gates green, full suite 187 passed / 0 failed twice consecutively; CI
+verification recorded in TEST_STATUS.md once observed). The
+pre-implementation contract text below is preserved; only this status line
+and §8's recorded results were added.
 
 Baseline: `main` at `77567e9` (Phase 5 closed, close-out/CI stabilization
 landed; CI green on ubuntu/macOS/windows — check-runs for `77567e9`

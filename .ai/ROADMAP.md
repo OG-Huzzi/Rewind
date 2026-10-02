@@ -99,9 +99,23 @@ deferred with its recorded blocker. The close-out phase
 fixed them deterministically (hook lease-retry tuning knob, claim barrier,
 spawn sentinel, capture diagnostics) without weakening any assertion.
 
-The next planned phase is **ecosystem recipes** (the deferred ADR-016 work),
-followed by release engineering. Further capability expansion (new object
-kinds, metadata classes, or platforms) remains possible but requires a new
-contract amendment with a capability-matrix update before implementation,
-and — for anything not probeable in the working environment — a real probe
-host first.
+## 8. Phase 6 - ecosystem recipes (manifest/lockfile evidence layer)
+
+Delivered (2026-10): the ADR-016 unlock condition, implemented narrowly per
+`.ai/PHASE_6_RECIPES.md` (ADR-022). Strong capture now records, per changed
+lockfile, the recipe kind, the exact root-relative lockfile path, the
+pre/post CAS hashes (or absent), and the recognized manifest paths — derived
+purely from the recorded manifests (no lockfile parsing, no network, no new
+CAS objects), stored as additive operation metadata in an idempotently
+created `operation_evidence` table, and rendered only on surfaces for stores
+that contain it. What ADR-016 rejected remains rejected: no package
+transactions, no registry/cache/global-state claims, no per-version
+semantics. Still deferred: every unprobed ecosystem (yarn, bun, poetry,
+Pipfile, Gemfile, composer, …), monorepo sub-project lockfiles (root-only
+depth policy), and any restore or re-run semantics for package actions.
+
+The next planned phase is **release engineering** (packaging, user-facing
+documentation, 1.0). Further capability expansion remains possible but
+requires a new contract amendment with a capability-matrix update before
+implementation, and — for anything not probeable in the working
+environment — a real probe host first.

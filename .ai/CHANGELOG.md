@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- Phase 6 — manifest/lockfile evidence layer (contract
+  `.ai/PHASE_6_RECIPES.md`, ADR-022): the ADR-016 unlock condition,
+  implemented narrowly. Strong capture (`rewind run`) now records, per
+  changed lockfile, the recipe kind, the exact root-relative lockfile
+  path, the pre/post CAS hashes (or absent), and the recognized manifest
+  paths present. Recognition (`src/recipes.rs`) is a pure function of the
+  recorded pre/post manifests: exact, root-only, case-sensitive filename
+  sets probed on a real host (cargo/npm/pnpm/go/uv/pip); no filesystem
+  re-reads, no second hashing, no CAS objects, no lockfile parsing — the
+  claim is exactly "lockfile X changed from hash A to B in this captured
+  command". Persistence is a new `operation_evidence` table created with
+  the established idempotent `CREATE TABLE IF NOT EXISTS` DDL (the
+  repository's first schema addition for existing catalogs — no
+  `ALTER TABLE`); rows are written in the same transaction as the
+  operation and only when non-empty; pre-phase catalogs self-extend on
+  open and their rows read byte-identically. Presentation (`list`,
+  `show`, timeline human + JSON, `inspect history --json`) renders
+  evidence only for stores that contain it; evidence-free output is
+  byte-identical everywhere and `TIMELINE_SCHEMA_VERSION` stays 1. Undo,
+  redo, plans, conflicts, reconciliation, recovery, and the watcher are
+  untouched — evidence never enters state identity or any decision path,
+  and it never claims a package action is reversible as a package action
+  (ADR-016 stands). Tests: 9 unit + 12 integration, including real-manager
+  cargo/npm runs (probed offline-safe) with CAS-verified hashes; full
+  suite 187/0 twice consecutively.
 - Phase 5 close-out (`.ai/PHASE_5_CLOSEOUT.md`): Phase 5 signed off
   (`.ai/PHASE_5_VERIFICATION_REPORT.md`) with the capability matrix final;
   the three CI timing flakes root-caused and fixed deterministically

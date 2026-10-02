@@ -350,3 +350,46 @@ became part of state identity (ADR-021, contract
 - **Owner/group and SACL are excluded, stated not hidden** — privilege-bound
   (SeTakeOwnershipPrivilege / SeSecurityPrivilege); never captured, never
   restored. Directory DACLs are deferred as a later slice.
+
+## 17. Phase 6 (manifest/lockfile evidence layer)
+
+Strong capture now records derived, per-operation dependency-state evidence
+(ADR-022, contract `.ai/PHASE_6_RECIPES.md`). Safety analysis:
+
+- **No safety-relevant behavior change.** Evidence is a pure function of
+  the already-recorded pre/post manifests (`src/recipes.rs`): no
+  filesystem re-reads, no extra scans, no CAS reads or writes, no second
+  hashing, no lockfile parsing. State ids, fingerprints, effects,
+  reversibility computation, plans, conflicts, quarantine, journal,
+  recovery, and the watcher are byte-for-byte untouched; evidence is
+  additive operation metadata that no decision path reads (asserted by
+  the undo/redo invariance test).
+- **Nothing is claimed beyond recorded state.** The evidence names
+  lockfiles and the CAS hashes the capture already recorded; it never
+  parses lockfile contents, so it cannot claim packages or versions, and
+  it never speaks about registry, cache, or global state. Undo/redo
+  semantics are unchanged — evidence never suggests a package action is
+  reversible as a package action.
+- **Fabrication and failure survival are closed by construction.**
+  Derivation runs only on the strong-capture success path;
+  capture-failure, passive-observation, boundary-only, and restore drafts
+  carry none; the `operation_evidence` row is written in the same
+  transaction as its operation, so a failed insert rolls back both, and
+  the row's `PRIMARY KEY` makes duplicates structurally impossible.
+- **Migration is the established idempotent pattern.** The repository has
+  no migration mechanism (documented-vs-code discrepancy reconciled in
+  the contract); the new table is created with `CREATE TABLE IF NOT
+  EXISTS` on every open — no `ALTER TABLE`, no rewrite of existing rows.
+  Pre-phase catalogs gain the table on open and their rows read
+  byte-identically (field skipped when empty). A present-but-unparseable
+  evidence blob is an explicit read error (parity with effects JSON),
+  never a silent reinterpretation.
+- **Recognition is environment-independent.** Exact, root-relative,
+  case-sensitive byte equality against a probed filename set; no
+  platform branches, no locale, no runtime probing. The same recorded
+  manifests produce the same evidence on every platform (cross-platform
+  CI executes the differential case test).
+- **Presentation adds no hazard.** Human surfaces render names only;
+  JSON surfaces add an optional field, omitted for evidence-free stores,
+  so unchanged-store output is byte-identical (Phase 4 AC3 preserved and
+  extended). Presentation still never mutates, leases, or gates.

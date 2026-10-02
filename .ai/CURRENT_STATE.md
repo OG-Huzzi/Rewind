@@ -1,11 +1,14 @@
 # Current Implementation State
 
-Status: **Phase 5 closed** (signoff `.ai/PHASE_5_VERIFICATION_REPORT.md`;
+Status: **Phase 6 delivered** (manifest/lockfile evidence layer, contract
+`.ai/PHASE_6_RECIPES.md`, ADR-022; local gates green — full suite 187
+passed / 0 failed twice consecutively; CI recorded in TEST_STATUS.md).
+Phase 5 closed (signoff `.ai/PHASE_5_VERIFICATION_REPORT.md`;
 close-out contract `.ai/PHASE_5_CLOSEOUT.md`) — four platform-expansion
 slices delivered and CI-verified, the capability matrix final, all
 remaining items deferred with recorded blockers, and the three CI timing
-flakes root-caused and fixed deterministically. Slice 4 — **explicit NTFS DACL ACEs as part of the
-regular-file fingerprint — implemented** (contract
+flakes root-caused and fixed deterministically. Slice 4 — **explicit NTFS
+DACL ACEs as part of the regular-file fingerprint — implemented** (contract
 `.ai/PHASE_5_NTFS_DACL.md`, ADR-021; local gates green — 166/0 — CI
 recorded in TEST_STATUS.md). Phase 5 slice 3 — **Windows alternate data
 streams (ADS) as part of the regular-file fingerprint — implemented and
@@ -28,14 +31,52 @@ capability matrix; final CI green on ubuntu/macOS/Windows (see
 TEST_STATUS.md for the run and the FIFO lifecycle evidence). Phase 4 first slice (time-range history view) **implemented and
 CI-verified** — commit `1f37ec3` on `main`, CI run 36228897539 green on
 ubuntu/macOS/Windows; contract at `.ai/PHASE_4_TIME_AND_ECOSYSTEM.md`
-(status corrected there post-implementation; recipes deferral is ADR-016).
-Phase 3 (continuous observation) complete and CI-verified
+(status corrected there post-implementation; recipes deferral is ADR-016,
+whose unlock condition Phase 6 now delivers). Phase 3 (continuous observation) complete and CI-verified
 (run #36111890265 on `d69fdca`: ubuntu, macOS and windows all green; see
 `.ai/PHASE_3_VERIFICATION_REPORT.md`, **Phase 3 VERIFIED** — full suite
 119 passed / 0 failed locally, all 63 Phase 1/2 tests unchanged). Phase 2
 (dependency-aware inspection) is implemented and CI-verified (run #23 on
 `4d89a2f`: ubuntu, macOS and windows all green) and documented in
 `.ai/PHASE_2_VERIFICATION_REPORT.md` (**Phase 2 VERIFIED**).
+
+## Phase 6: manifest/lockfile evidence layer (implemented)
+
+- Every strongly captured command (`rewind run`) now records, per changed
+  lockfile, the recipe kind (cargo/npm/pnpm/go/uv/pip), the exact
+  root-relative lockfile path, the pre/post CAS hashes (or absent), and
+  the recognized manifest paths present — derived purely from the recorded
+  pre/post manifests by `src/recipes.rs` (no filesystem re-reads, no
+  second hashing, no CAS objects, no lockfile parsing). The claim is
+  exactly "lockfile X changed from hash A to B in this captured command".
+- Recognition is exact, root-only, and case-sensitive on every platform
+  (the npm probe's nested `node_modules/.package-lock.json` is the
+  recorded false-positive witness for the depth policy; the same recorded
+  name produces the same evidence everywhere). Same-hash rewrites and
+  manifest-only changes produce no entry; non-regular lockfile objects
+  (directory/symlink) are suppressed, never guessed. Ecosystems without
+  probe evidence (yarn, bun, poetry, Pipfile, Gemfile, composer, …) stay
+  unrecognized — the ADR-016 no-guess rule, not an oversight.
+- Persistence is additive: a new `operation_evidence` table (one JSON row
+  per operation, written in the same transaction as the operation insert,
+  only when non-empty) created with the established idempotent
+  `CREATE TABLE IF NOT EXISTS` DDL — the repository has no other migration
+  mechanism (a documented-vs-code discrepancy reconciled in the contract:
+  Phase 4's `created_at` was never a migration). Pre-phase catalogs gain
+  the table on open; legacy rows read byte-identically (field skipped
+  when empty on every serialization surface: `show`, `inspect history
+  --json`, timeline JSON).
+- Presentation: `list` and the timeline human line append
+  ` lockfiles=[…]` only for operations with evidence; timeline JSON gains
+  an optional `evidence` array; `TIMELINE_SCHEMA_VERSION` stays 1 (a bump
+  would change byte-output for evidence-free stores). `diff` and `ui` are
+  intentionally unchanged.
+- Undo/redo, plans, conflicts, reconciliation, recovery, journal,
+  quarantine, and the watcher are untouched: evidence is derived metadata
+  that never enters state identity or any decision path.
+- Real-manager integration tests run the probed offline-safe operations
+  (`cargo generate-lockfile --offline`; npm lock-only) and verify the
+  evidence hashes against the CAS; honest skips where a tool is absent.
 
 ## Phase 5 slice 4: Windows NTFS DACLs — explicit ACEs (implemented)
 
@@ -353,8 +394,15 @@ verification for the branch happens through its PR CI run.
 ## Not started
 
 - Range-based restore (excluded by the Phase 4 contract, ADR-015).
-- Package-specific recipes (evaluated and deferred, ADR-016).
-- Phase 5 platform expansion.
+- Package-transaction recipes beyond the Phase 6 evidence layer: semantic
+  restore, re-running package managers, registry/cache/global-state claims,
+  and per-version lockfile semantics remain rejected (ADR-016 stands;
+  ADR-022 delivers only the unlock condition it named). Unprobed
+  ecosystems (yarn, bun, poetry, Pipfile, Gemfile, composer, …) and
+  monorepo sub-project lockfiles are not recognized (root-only depth
+  policy), deferred until probe evidence exists.
+- Release engineering (packaging, user-facing documentation, 1.0) — the
+  next planned phase per the roadmap.
 
 ## Known limitations
 
