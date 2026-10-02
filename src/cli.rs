@@ -109,17 +109,14 @@ pub enum Command {
     Restore { name: String },
     /// Inspect workspace integrity and report actionable diagnostics.
     Doctor,
-    /// Inspect recorded history without taking a writer lease.
     Inspect {
         #[command(subcommand)]
         command: InspectCommand,
     },
-    /// Plan selected rollback operations without mutating the workspace.
     Plan {
         #[command(subcommand)]
         command: PlanCommand,
     },
-    /// Revalidate and apply selected rollback operations.
     Apply {
         #[command(subcommand)]
         command: ApplyCommand,
@@ -128,7 +125,6 @@ pub enum Command {
     Ui,
     /// Advisory continuous observation (Phase 3). The watcher is never
     /// authoritative; see `.ai/PHASE_3_CONTINUOUS_OBSERVATION.md`.
-    /// Manage the optional advisory filesystem watcher.
     Watch {
         #[command(subcommand)]
         command: WatchCommand,
