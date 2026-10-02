@@ -39,8 +39,18 @@
   it (only tests were) — a process defect in the review step, recorded
   honestly in TEST_STATUS. Fixed: fmt applied (`126baaf`), default
   toolchain updated to 1.99.0 (the version CI's `@stable` resolves to),
-  all gates re-run green (suite 187/0 twice). Re-verification pushed;
-  record the final run in TEST_STATUS when observed.
+  all gates re-run green (suite 187/0 twice).
+- CI run #62 on `156b039`: macOS green; ubuntu/windows failed with two
+  further REAL test-environment defects, fixed in `b058cdb`: (1) POSIX
+  script bodies lacked shebangs → ENOEXEC on ubuntu (macOS fell back —
+  non-uniform); the helper now prepends `#!/bin/sh` (house convention,
+  documented on tests/common::shell_script). (2) The passive test raced
+  the hook's 50 ms scan deadline on windows; it now accepts both
+  documented post-hook outcomes and asserts the evidence property in
+  each branch.
+- CI run #63 on `b058cdb`: **green on ubuntu/macOS/windows** (workflow
+  run 36981061095). Phase 6 COMPLETE; release engineering is the next
+  planned phase.
 
 ## Phase 5 close-out / CI stabilization — executed
 

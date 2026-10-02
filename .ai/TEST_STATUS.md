@@ -95,6 +95,9 @@ file-based and by the recorded probes, with no real-manager CI test.
 CI (GitHub Actions, `OG-Huzzi/Rewind`, fmt/check/clippy -D warnings/test
 on ubuntu-latest, macos-latest, windows-latest):
 
+- Run #63 on `b058cdb`: **green on ubuntu, macOS, and windows** (workflow
+  run 36981061095; check-runs success × 3) — including the real-manager
+  cargo/npm tests on every runner and the POSIX shebang fix.
 - Run on `7efbc14`: **all three platforms failed at the Format step**
   (annotations: "Process completed with exit code 1" with no clippy or
   test-panic annotations — a plain run step). Classified: a **real
@@ -107,8 +110,25 @@ on ubuntu-latest, macos-latest, windows-latest):
   review step, fixed by re-running the gate discipline: `cargo fmt
   --all` applied (`126baaf`), and the full gate sequence re-executed on
   the updated 1.99.0 toolchain (fmt/check/clippy `-D warnings` + suite
-  187/0 twice). Fix pushed for re-verification; the re-run is recorded
-  below.
+  187/0 twice).
+- Run #62 on `156b039`: macOS green; ubuntu and windows failed with two
+  further **real test-environment defects, not flakes**, both fixed in
+  `b058cdb`: (1) ubuntu — three script-driven tests failed with
+  `Io(Os { code: 8, "Exec format error" })` because this suite's POSIX
+  script bodies carried no shebang (a shebang-less script is not
+  executable on Linux; macOS happened to fall back — non-uniform
+  behavior the phase forbids relying on). Fix: the helper prepends
+  `#!/bin/sh` to every POSIX body (the foundation suite's convention),
+  documented on `tests/common::shell_script`. (2) windows —
+  `passive_observations_and_capture_failures_carry_no_evidence` required
+  the post-hook to record a PassiveObservation, but the hook's 50 ms
+  scan deadline (Phase 1.3, not env-tunable) blew on the loaded runner
+  and the hook landed in its documented conservative CaptureFailed
+  model. Fix: the test accepts both documented outcomes (found by the
+  boundary's exact command text) and asserts the Phase 6 property in
+  each branch — a non-strong operation never carries evidence. No
+  evidence assertion was weakened; the wall-clock-dependent kind
+  expectation is gone.
 
 ## Phase 5 close-out / CI stabilization
 

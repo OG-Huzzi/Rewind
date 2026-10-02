@@ -62,9 +62,11 @@
       migration, presentation, determinism, undo/redo, real-manager
       cargo+npm); full suite 187/0 twice consecutively; all local gates
       green.
-- [x] Adversarial review completed; two test-side findings fixed.
-- [ ] CI verification on ubuntu/macOS/windows for the phase commit
-      (recorded in TEST_STATUS.md once observed).
+- [x] Adversarial review completed; findings fixed (test-side defects in
+      `8002933` and `b058cdb`, recorded in TEST_STATUS).
+- [x] CI green on ubuntu/macOS/windows for the phase commits (run #63 on
+      `b058cdb`; the two intermediate failures and their real root causes
+      are recorded in TEST_STATUS).
 - [ ] Deferred (unchanged, still deferred): unprobed ecosystems (yarn,
       bun, poetry, Pipfile, Gemfile, composer, …) and monorepo
       sub-project lockfiles — each requires probe evidence and a contract

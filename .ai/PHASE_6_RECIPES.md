@@ -1,10 +1,13 @@
 # Phase 6 Contract — Ecosystem Recipes: Manifest/Lockfile Evidence Layer
 
-Status: **IMPLEMENTED** (commits `94adeaa` + `8002933` on `main`; local
-gates green, full suite 187 passed / 0 failed twice consecutively; CI
-verification recorded in TEST_STATUS.md once observed). The
-pre-implementation contract text below is preserved; only this status line
-and §8's recorded results were added.
+Status: **IMPLEMENTED and CI-VERIFIED** (implementation `94adeaa`,
+adversarial-review fix `8002933`; the CI round on `7efbc14` failed at the
+Format step and the round on `156b039` surfaced two further
+test-environment defects — both real, both fixed, both recorded in
+TEST_STATUS.md — and CI run #63 on `b058cdb` is green on ubuntu, macOS,
+and windows. Local gates green on Rust 1.99.0; full suite 187 passed /
+0 failed twice consecutively). The pre-implementation contract text below
+is preserved; only this status line was added.
 
 Baseline: `main` at `77567e9` (Phase 5 closed, close-out/CI stabilization
 landed; CI green on ubuntu/macOS/windows — check-runs for `77567e9`
