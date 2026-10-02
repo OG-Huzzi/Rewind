@@ -56,8 +56,10 @@ edition 2021; and `rust-version = "1.98.1"`, justified by the observed stable
 1.98.1 toolchain used for local validation while CI installs stable. Keep the
 version at `0.1.0` for the first release. Use an explicit Cargo `include`
 allowlist containing the manifest, lockfile, README, and `src/**`; add the
-owner-supplied license file to that allowlist when the gate is resolved. This
-keeps `.ai/`, workflow files, test fixtures, examples, `phases/`, and shell
+owner-supplied license file to that allowlist when the gate is resolved. Cargo
+also generates `.cargo_vcs_info.json` and `Cargo.toml.orig` in the crate; these
+are expected package metadata, not source allowlist entries. This keeps
+`.ai/`, workflow files, test fixtures, examples, `phases/`, and shell
 integration scripts out of the packaged crate. Verify the resulting contents
 with `cargo package --list`.
 
@@ -170,7 +172,8 @@ decision under this phase.
   before production metadata, README, or workflow edits.
 - **AC4 — Metadata/package:** all non-license metadata is accurate; no license
   field remains before the owner decision; `cargo package --list` contains
-  only the declared allowlist plus the owner license after it exists.
+  only the declared allowlist, Cargo-generated `.cargo_vcs_info.json` and
+  `Cargo.toml.orig`, and the owner license after it exists.
 - **AC5 — README:** every requested section and caveat is present, every
   material claim cites contract/test evidence, platform states match Phase 5,
   and the runnable quick start succeeds on the host where it is claimed.
