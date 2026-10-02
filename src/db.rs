@@ -8,7 +8,7 @@ use uuid::Uuid;
 use crate::error::{Result, RewindError};
 use crate::model::{
     Effect, EffectType, JournalStatus, Manifest, OperationKind, OperationRecord, OperationStatus,
-    Reversibility, StateKind, StateRecord, TrackingConfidence, WorkspaceCondition,
+    RecipeEvidence, Reversibility, StateKind, StateRecord, TrackingConfidence, WorkspaceCondition,
 };
 
 #[derive(Clone, Debug)]
@@ -40,6 +40,10 @@ pub struct OperationDraft {
     pub reversibility: Reversibility,
     pub error: Option<String>,
     pub effects: Vec<Effect>,
+    /// Phase 6 manifest/lockfile evidence. Empty for every draft that
+    /// recorded no recognized lockfile change; only strongly captured
+    /// commands derive it (`src/recipes.rs`).
+    pub evidence: Vec<RecipeEvidence>,
 }
 
 /// One durable passive boundary. `id` is the immutable identity that the
@@ -203,6 +207,10 @@ impl Catalog {
                 workspace_id TEXT NOT NULL REFERENCES workspaces(id),
                 state_id TEXT NOT NULL REFERENCES states(id),
                 created_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS operation_evidence (
+                operation_id INTEGER PRIMARY KEY REFERENCES operations(id),
+                evidence_json TEXT NOT NULL
             );
             ",
         )?;
@@ -370,6 +378,12 @@ impl Catalog {
                 ],
             )?;
         }
+        if !draft.evidence.is_empty() {
+            transaction.execute(
+                "INSERT INTO operation_evidence(operation_id, evidence_json) VALUES(?1, ?2)",
+                params![operation_id, serde_json::to_string(&draft.evidence)?],
+            )?;
+        }
         transaction.commit()?;
         Ok(operation_id)
     }
@@ -387,7 +401,12 @@ impl Catalog {
             .optional()?
             .ok_or_else(|| RewindError::NotFound(format!("operation {id}")))?;
         let effects = read_effects(&connection, id)?;
-        Ok(OperationRecord { effects, ..row })
+        let evidence = read_evidence(&connection, id)?;
+        Ok(OperationRecord {
+            effects,
+            evidence,
+            ..row
+        })
     }
 
     pub fn list_operations(&self, workspace_id: Uuid) -> Result<Vec<OperationRecord>> {
@@ -402,8 +421,10 @@ impl Catalog {
         for row in rows {
             let operation = row?;
             let effects = read_effects(&connection, operation.id)?;
+            let evidence = read_evidence(&connection, operation.id)?;
             operations.push(OperationRecord {
                 effects,
+                evidence,
                 ..operation
             });
         }
@@ -425,7 +446,12 @@ impl Catalog {
             .optional()?
             .ok_or_else(|| RewindError::NotFound("no undoable operation".to_owned()))?;
         let effects = read_effects(&connection, row.id)?;
-        Ok(OperationRecord { effects, ..row })
+        let evidence = read_evidence(&connection, row.id)?;
+        Ok(OperationRecord {
+            effects,
+            evidence,
+            ..row
+        })
     }
 
     pub fn latest_redoable(&self, workspace_id: Uuid) -> Result<OperationRecord> {
@@ -443,7 +469,12 @@ impl Catalog {
             .optional()?
             .ok_or_else(|| RewindError::NotFound("no redoable operation".to_owned()))?;
         let effects = read_effects(&connection, row.id)?;
-        Ok(OperationRecord { effects, ..row })
+        let evidence = read_evidence(&connection, row.id)?;
+        Ok(OperationRecord {
+            effects,
+            evidence,
+            ..row
+        })
     }
 
     pub fn set_operation_status(&self, id: i64, status: OperationStatus) -> Result<()> {
@@ -757,7 +788,26 @@ fn read_operation(row: &rusqlite::Row<'_>) -> rusqlite::Result<OperationRecord> 
         error: row.get(11)?,
         created_at: row.get(12)?,
         effects: Vec::new(),
+        evidence: Vec::new(),
     })
+}
+
+/// Reads one operation's Phase 6 evidence blob. Missing row = no evidence
+/// (every pre-phase operation, and every operation without a recognized
+/// lockfile change). A present but unparseable blob is an explicit error,
+/// never a silently emptied record — parity with the effects JSON.
+fn read_evidence(connection: &Connection, operation_id: i64) -> Result<Vec<RecipeEvidence>> {
+    let stored = connection
+        .query_row(
+            "SELECT evidence_json FROM operation_evidence WHERE operation_id=?1",
+            params![operation_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    match stored {
+        Some(json) => Ok(serde_json::from_str(&json)?),
+        None => Ok(Vec::new()),
+    }
 }
 
 fn read_effects(connection: &Connection, operation_id: i64) -> Result<Vec<Effect>> {

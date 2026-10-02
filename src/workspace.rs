@@ -504,6 +504,9 @@ impl Workspace {
             reversibility: Reversibility::Unavailable,
             error: Some(error.to_owned()),
             effects: Vec::new(),
+            // A failed capture has no trustworthy post-state, so there is
+            // nothing provable to derive evidence from (Phase 6, ADR-022).
+            evidence: Vec::new(),
         };
         let operation_id = self.storage.catalog.insert_operation(self.id, &draft)?;
         if !self.storage.catalog.has_open_unknown(self.id)? {
@@ -598,6 +601,10 @@ impl Workspace {
         };
         let before = self.state_manifest(&pre_state)?;
         let effects = diff_manifests(&before, &post_scan.manifest);
+        // Phase 6 (ADR-022): derived lockfile evidence from the recorded
+        // pre/post manifests only — a pure function with no I/O, run after
+        // the diff and before the insert. It cannot fail by construction.
+        let evidence = crate::recipes::derive_evidence(&before, &post_scan.manifest);
         let reversible = if effects.iter().all(|effect| {
             effect.pre.is_supported_for_restore() && effect.post.is_supported_for_restore()
         }) {
@@ -619,6 +626,7 @@ impl Workspace {
                 reversibility: reversible,
                 error: None,
                 effects,
+                evidence,
             },
         ) {
             Ok(operation_id) => operation_id,

@@ -491,6 +491,57 @@ pub struct Effect {
     pub post: Fingerprint,
 }
 
+/// One recognized package-manager family (Phase 6 manifest/lockfile
+/// evidence layer). Only ecosystems probed on a real host are listed
+/// (`.ai/PHASE_6_RECIPES.md` §3); the enum is closed on purpose — a
+/// recipe the project cannot probe is not recognized, never guessed.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecipeKind {
+    Cargo,
+    Npm,
+    Pnpm,
+    Go,
+    Uv,
+    Pip,
+}
+
+impl RecipeKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Cargo => "cargo",
+            Self::Npm => "npm",
+            Self::Pnpm => "pnpm",
+            Self::Go => "go",
+            Self::Uv => "uv",
+            Self::Pip => "pip",
+        }
+    }
+}
+
+/// Recorded dependency-state evidence for one captured operation, per
+/// changed lockfile (Phase 6, ADR-022). This is a record, not an
+/// interpretation: it names the lockfile and the pre/post CAS hashes the
+/// capture already recorded (or `absent`), plus the recognized manifest
+/// paths present in either recorded state. It never parses lockfile
+/// contents, so it cannot claim which packages or versions changed, and
+/// it never speaks about registry, cache, or other external state. Undo
+/// and redo apply recorded filesystem state only; nothing here claims a
+/// package action is reversible as a package action.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RecipeEvidence {
+    pub kind: RecipeKind,
+    /// Exact workspace-root-relative lockfile path.
+    pub lockfile: String,
+    /// Recorded CAS content id of the pre-state lockfile; `None` = absent.
+    pub pre_hash: Option<String>,
+    /// Recorded CAS content id of the post-state lockfile; `None` = absent.
+    pub post_hash: Option<String>,
+    /// Recognized manifest/supporting paths present in the recorded pre-
+    /// or post-state, in the recipe's documented order.
+    pub manifests: Vec<String>,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct OperationRecord {
     pub id: i64,
@@ -507,6 +558,12 @@ pub struct OperationRecord {
     pub error: Option<String>,
     pub created_at: i64,
     pub effects: Vec<Effect>,
+    /// Phase 6 manifest/lockfile evidence. Empty for every operation that
+    /// recorded no recognized lockfile change — including every pre-phase
+    /// record — and skipped from serialization when empty, so those
+    /// records display byte-identically to the pre-phase form.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence: Vec<RecipeEvidence>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

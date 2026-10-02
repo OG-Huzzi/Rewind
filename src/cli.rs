@@ -391,13 +391,14 @@ pub fn run(cli: Cli) -> Result<i32> {
             println!("condition {}", workspace.condition()?);
             for operation in workspace.storage.catalog.list_operations(workspace.id)? {
                 println!(
-                    "#{id} {kind} {status} {confidence} {reversibility} {command}",
+                    "#{id} {kind} {status} {confidence} {reversibility} {command}{evidence}",
                     id = operation.id,
                     kind = operation.kind.as_str(),
                     status = operation.status.as_str(),
                     confidence = operation.confidence.as_str(),
                     reversibility = operation.reversibility.as_str(),
-                    command = operation.command.unwrap_or_default()
+                    command = operation.command.clone().unwrap_or_default(),
+                    evidence = evidence_suffix(&operation.evidence)
                 );
             }
             Ok(0)
@@ -469,6 +470,23 @@ fn watch_command(command: WatchCommand) -> Result<i32> {
 
 fn open_workspace() -> Result<Workspace> {
     Workspace::open_from_current(&env::current_dir()?)
+}
+
+/// Phase 6 evidence rendering for human lines: names only, so the claim
+/// stays exactly what was recorded ("these lockfiles changed") without
+/// leaking hashes into list/timeline summaries. The full record with
+/// hashes is available in the JSON surfaces (`show`, timeline `--json`).
+/// Empty when the operation carries no evidence, so evidence-free output
+/// is byte-identical to the pre-phase form.
+fn evidence_suffix(evidence: &[crate::model::RecipeEvidence]) -> String {
+    if evidence.is_empty() {
+        return String::new();
+    }
+    let lockfiles: Vec<&str> = evidence
+        .iter()
+        .map(|entry| entry.lockfile.as_str())
+        .collect();
+    format!(" lockfiles=[{}]", lockfiles.join(", "))
 }
 
 fn inspect(command: InspectCommand) -> Result<i32> {
@@ -562,11 +580,12 @@ fn inspect_timeline(
     );
     for entry in &report.entries {
         println!(
-            "{:<19} {:<17} {:<28} {}",
+            "{:<19} {:<17} {:<28} {}{}",
             format_rfc3339(entry.timestamp),
             entry.tier.as_str(),
             entry.identifier,
-            entry.summary
+            entry.summary,
+            evidence_suffix(&entry.evidence)
         );
     }
     if report.entries.is_empty() {
@@ -1178,6 +1197,7 @@ fn hook_post_locked(
                 reversibility: Reversibility::Unavailable,
                 error: Some("workspace requires reconciliation".to_owned()),
                 effects: Vec::new(),
+                evidence: Vec::new(),
             },
         )?;
         return Ok(0);
@@ -1225,6 +1245,9 @@ fn hook_post_locked(
             reversibility: Reversibility::Unavailable,
             error: None,
             effects,
+            // Passive observations are low-confidence boundaries, not
+            // strong captures; Phase 6 evidence is strong-capture only.
+            evidence: Vec::new(),
         },
     )?;
     workspace.storage.catalog.set_workspace(

@@ -143,6 +143,9 @@ pub fn restore_snapshot(workspace: &Workspace, name: &str) -> Result<RollbackOut
             reversibility: Reversibility::FullyReversible,
             error: None,
             effects: crate::scan::diff_manifests(&current.manifest, &target),
+            // Snapshot restores are not package-manager captures; Phase 6
+            // evidence is derived only by strong command capture.
+            evidence: Vec::new(),
         },
     )?;
     execute_transition(

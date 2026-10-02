@@ -17,7 +17,7 @@ use serde::Serialize;
 
 use crate::db::{BoundaryRow, SnapshotRow, UnknownIntervalRow};
 use crate::humantime::format_rfc3339;
-use crate::model::OperationRecord;
+use crate::model::{OperationRecord, RecipeEvidence};
 use crate::watch::model::DegradationReason;
 
 pub const TIMELINE_SCHEMA_VERSION: u64 = 1;
@@ -76,6 +76,12 @@ pub struct TimelineEntry {
     pub reversibility: Option<String>,
     /// Unknown intervals only: whether the interval is still open.
     pub open: Option<bool>,
+    /// Phase 6 manifest/lockfile evidence, present only on OPERATION
+    /// entries whose recorded operation carries it. Skipped from
+    /// serialization when absent/empty, so evidence-free stores render
+    /// byte-identically to the pre-phase timeline.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub evidence: Vec<RecipeEvidence>,
 }
 
 /// Watcher advisory evidence for the range: bounded summaries, never a raw
@@ -174,6 +180,7 @@ impl TimelineInput {
                 confidence: Some(operation.confidence.as_str().to_owned()),
                 reversibility: Some(operation.reversibility.as_str().to_owned()),
                 open: None,
+                evidence: operation.evidence,
             });
         }
 
@@ -190,6 +197,7 @@ impl TimelineInput {
                 confidence: None,
                 reversibility: None,
                 open: None,
+                evidence: Vec::new(),
             });
         }
 
@@ -210,6 +218,7 @@ impl TimelineInput {
                     confidence: None,
                     reversibility: None,
                     open: Some(interval.is_open),
+                    evidence: Vec::new(),
                 });
             }
         }
@@ -228,6 +237,7 @@ impl TimelineInput {
                     confidence: Some("LOW".to_owned()),
                     reversibility: Some("NOT_REVERSIBLE".to_owned()),
                     open: Some(boundary.ended_at.is_none()),
+                    evidence: Vec::new(),
                 });
             }
         }
@@ -248,6 +258,7 @@ impl TimelineInput {
                 confidence: None,
                 reversibility: None,
                 open: None,
+                evidence: Vec::new(),
             });
         }
 
@@ -384,6 +395,7 @@ mod tests {
             error: None,
             created_at,
             effects: Vec::<Effect>::new(),
+            evidence: Vec::new(),
         }
     }
 
