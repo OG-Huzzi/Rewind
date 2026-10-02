@@ -619,3 +619,63 @@ untouched: evidence is derived metadata that never enters plans,
 conflicts, effects, or reconciliation. Nested/monorepo lockfiles produce
 no evidence (documented root-only tradeoff), and unprobed ecosystems stay
 deferred until a probe host exists.
+
+## ADR-023: Release artifacts are gated by an owner-selected license
+
+### Context
+
+Phase 7 requires a user-facing install path and reproducible tagged binary
+archives while preserving Rewind's conditional safety claims. The verified
+repository baseline is `36cfeba` on a clean, synced `main`, at crate version
+`0.1.0`, with no tags. The manifest says `MIT`, but no `LICENSE`, `LICENCE`,
+or `COPYING` file exists in the repository. Choosing legal terms is an owner
+decision. The existing README is stale about Phase 5 junction support and the
+completed rollback optimization; `cargo package --list` also showed that
+internal `.ai/` documents, tests, examples, and integrations would otherwise
+ship in the crate.
+
+### Decision
+
+Contract release engineering without making the legal choice. Remove the
+unsupported `license = "MIT"` metadata and leave both `license` and
+`license-file` unset until the owner provides a license file and identifies
+its actual SPDX identifier or path. Do not create a tag, GitHub Release, or
+public artifact while that gate is unresolved. Prepare the remaining
+metadata, an explicitly scoped crate allowlist, a README marked with the
+owner-decision placeholder, and a tag-only release workflow.
+
+Keep the first release version at `0.1.0`; the intended first annotated tag
+after the license gate is `v0.1.0`. A future tag must match Cargo's version.
+The owner alone decides whether and when evidence supports `1.0.0`; collect
+that evidence in `.ai/RELEASE_1_0_EVIDENCE.md`.
+
+The release workflow runs the existing CI gates on ubuntu, macOS, and Windows
+before native `cargo build --release --locked`, creates a target-named archive
+with the binary and `INSTALL.txt`, uploads each to one workflow run, then has
+one job attach all three to one GitHub Release. The release trigger is `v*`
+tags only. Use full-SHA-pinned actions, `GITHUB_TOKEN` only, minimum job
+permissions, and replace an existing same-tag release before rebuilding so
+stale assets cannot be represented as the new successful run. Crates.io
+publication remains deferred until the owner provides a publishing token.
+
+The complete scope, metadata, artifact, audit, acceptance, and revert rules
+are in `.ai/PHASE_7_RELEASE.md`.
+
+### Alternatives
+
+Keep `MIT` based on the manifest alone (rejected: no license text exists and
+the owner has not selected legal terms). Choose a common license temporarily
+(rejected for the same reason). Treat `0.1.0` packaging as sufficient evidence
+for `1.0.0` (rejected: version declaration belongs to the owner). Build one
+release per platform job (rejected: partial and concurrent release state).
+Ship all repository files in the crate (rejected: it exposes internal
+engineering records and fixtures).
+
+### Consequences
+
+The current source-install path can be audited and documented, and artifacts
+can be generated reproducibly once the license gate is resolved. Until then,
+the phase can prepare and validate the workflow and documentation but cannot
+claim a published release. Product behavior and runtime dependencies do not
+change. The crate archive becomes an explicit user-facing package boundary;
+the owner-supplied license must be added to its allowlist when chosen.
