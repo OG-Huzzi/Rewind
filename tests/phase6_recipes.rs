@@ -111,6 +111,43 @@ fn parse_json(stdout: &str) -> Value {
     serde_json::from_str(stdout).expect("parse JSON output")
 }
 
+fn run_cli_owned(fixture: &Fixture, args: &[String]) -> (i32, String, String) {
+    let output = Command::new(env!("CARGO_BIN_EXE_rewind"))
+        .args(args)
+        .current_dir(fixture.root.path())
+        .output()
+        .expect("spawn rewind");
+    (
+        output.status.code().unwrap_or(1),
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
+/// A half-open timeline range computed from the recorded operation times,
+/// never from the wall clock: the assertion must not rot when CI runs in
+/// a later year (the same determinism phase 4 established).
+fn timeline_range_args(fixture: &Fixture) -> Vec<String> {
+    let operations = fixture
+        .workspace
+        .storage
+        .catalog
+        .list_operations(fixture.workspace.id)
+        .expect("operations");
+    let created_at = operations.last().expect("at least one operation").created_at;
+    let since = rewind::humantime::format_rfc3339(created_at);
+    let until = rewind::humantime::format_rfc3339(created_at + 1);
+    vec![
+        "inspect".to_owned(),
+        "timeline".to_owned(),
+        "--json".to_owned(),
+        "--since".to_owned(),
+        since,
+        "--until".to_owned(),
+        until,
+    ]
+}
+
 fn command_available(program: &str, args: &[&str]) -> bool {
     Command::new(program)
         .args(args)
@@ -121,16 +158,6 @@ fn command_available(program: &str, args: &[&str]) -> bool {
         .map(|status| status.success())
         .unwrap_or(false)
 }
-
-const RANGE: [&str; 7] = [
-    "inspect",
-    "timeline",
-    "--json",
-    "--since",
-    "2026-01-01T00:00:00Z",
-    "--until",
-    "2027-01-01T00:00:00Z",
-];
 
 /// Creates `Cargo.lock` (content "one") and `Cargo.toml` in one captured
 /// command and returns the operation id.
@@ -532,7 +559,8 @@ fn presentation_renders_evidence_and_evidence_free_output_is_unchanged() {
         stdout.contains("lockfiles=[Cargo.lock]"),
         "timeline human output must render the evidence:\n{stdout}"
     );
-    let (code, stdout, stderr) = run_cli(&with_evidence, RANGE.as_slice());
+    let range = timeline_range_args(&with_evidence);
+    let (code, stdout, stderr) = run_cli_owned(&with_evidence, &range);
     assert_eq!(code, 0, "stderr: {stderr}");
     let report = parse_json(&stdout);
     let entry = &report["entries"][0];
@@ -564,11 +592,15 @@ fn presentation_renders_evidence_and_evidence_free_output_is_unchanged() {
     let (code, stdout, _) = run_cli(&plain, &["show", &plain_id.to_string()]);
     assert_eq!(code, 0);
     assert!(!stdout.contains("\"evidence\""));
+    let (code, stdout, _) = run_cli(&plain, &["inspect", "history", "--json"]);
+    assert_eq!(code, 0);
+    assert!(!stdout.contains("\"evidence\""));
 
     let (code, stdout, _) = run_cli(&plain, &["inspect", "timeline"]);
     assert_eq!(code, 0);
     assert!(!stdout.contains("lockfiles=["));
-    let (code, stdout, _) = run_cli(&plain, RANGE.as_slice());
+    let range = timeline_range_args(&plain);
+    let (code, stdout, _) = run_cli_owned(&plain, &range);
     assert_eq!(code, 0);
     assert!(!stdout.contains("\"evidence\""));
 }
@@ -579,8 +611,9 @@ fn presentation_renders_evidence_and_evidence_free_output_is_unchanged() {
 fn timeline_json_is_byte_identical_for_evidence_bearing_and_free_stores() {
     let with_evidence = fixture();
     capture_cargo_pair(&with_evidence);
-    let first = run_cli(&with_evidence, RANGE.as_slice());
-    let second = run_cli(&with_evidence, RANGE.as_slice());
+    let range = timeline_range_args(&with_evidence);
+    let first = run_cli_owned(&with_evidence, &range);
+    let second = run_cli_owned(&with_evidence, &range);
     assert_eq!(first.0, 0);
     assert_eq!(second.0, 0);
     assert!(
@@ -595,8 +628,9 @@ fn timeline_json_is_byte_identical_for_evidence_bearing_and_free_stores() {
         &plain,
         write_file_script("phase6-plain-write", "foo.txt", "A"),
     );
-    let first = run_cli(&plain, RANGE.as_slice());
-    let second = run_cli(&plain, RANGE.as_slice());
+    let range = timeline_range_args(&plain);
+    let first = run_cli_owned(&plain, &range);
+    let second = run_cli_owned(&plain, &range);
     assert_eq!(first.0, 0);
     assert_eq!(first.1, second.1, "evidence-free determinism preserved");
     assert!(!first.1.contains("\"evidence\""));
