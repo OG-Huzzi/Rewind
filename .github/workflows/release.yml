@@ -1,0 +1,208 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTUP_TOOLCHAIN: stable
+
+jobs:
+  preflight:
+    name: Validate tag and license gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Check version and owner-selected license
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE_TAG" != v* ]]; then
+            echo "release tags must begin with v" >&2
+            exit 1
+          fi
+
+          metadata="$(cargo metadata --no-deps --format-version 1)"
+          package_version="$(jq -r '.packages[] | select(.name == "rewind") | .version' <<< "$metadata")"
+          tag_version="${RELEASE_TAG#v}"
+          if [[ "$tag_version" != "$package_version" ]]; then
+            echo "tag $RELEASE_TAG does not match Cargo version $package_version" >&2
+            exit 1
+          fi
+
+          license="$(jq -r '.packages[] | select(.name == "rewind") | .license // ""' <<< "$metadata")"
+          license_file="$(jq -r '.packages[] | select(.name == "rewind") | .license_file // ""' <<< "$metadata")"
+          if [[ -z "$license" && -z "$license_file" ]]; then
+            echo "release blocked: owner-selected license metadata is missing" >&2
+            exit 1
+          fi
+          if [[ -n "$license_file" ]]; then
+            if [[ ! -f "$license_file" ]]; then
+              echo "release blocked: Cargo license-file does not exist: $license_file" >&2
+              exit 1
+            fi
+          elif ! find . -maxdepth 1 -type f \
+            \( -iname 'LICENSE' -o -iname 'LICENSE.*' -o -iname 'LICENCE' -o -iname 'LICENCE.*' -o -iname 'COPYING' -o -iname 'COPYING.*' \) \
+            -print -quit | grep -q .; then
+            echo "release blocked: no owner-selected LICENSE/LICENCE/COPYING file exists" >&2
+            exit 1
+          fi
+
+  prepare-release:
+    name: Retire previous assets for this tag
+    needs: preflight
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Remove any prior release for an idempotent rebuild
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release delete "$RELEASE_TAG" --yes
+          fi
+
+  build:
+    name: Build and package (${{ matrix.os }})
+    needs: prepare-release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Install stable toolchain components
+        run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Compile (all targets)
+        run: cargo check --all-targets
+
+      - name: Clippy (deny warnings)
+        shell: bash
+        run: cargo clippy --all-targets --color never -- -D warnings
+
+      - name: Tests
+        shell: bash
+        run: cargo test --color never
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Package release archive (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          target="$(rustc -vV | sed -n 's/^host: //p')"
+          binary_version="$(./target/release/rewind --version | awk 'NR == 1 { print $2 }')"
+          if [[ "$binary_version" != "$version" ]]; then
+            echo "tag version $version does not match binary version $binary_version" >&2
+            exit 1
+          fi
+
+          mkdir -p release bundle
+          cp target/release/rewind bundle/rewind
+          cat > bundle/INSTALL.txt <<'EOF'
+          Extract the archive and place the rewind binary on your PATH.
+          Run `rewind --help` for commands. Source installation and safety
+          limits are documented in the repository README.
+          EOF
+          archive="release/rewind-${RELEASE_TAG}-${target}.tar.gz"
+          tar -czf "$archive" -C bundle rewind INSTALL.txt
+
+      - name: Package release archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $version = $env:RELEASE_TAG.Substring(1)
+          $targetLine = rustc -vV | Where-Object { $_.StartsWith('host: ') }
+          $target = $targetLine.Substring(6).Trim()
+          $binaryVersion = (& .\target\release\rewind.exe --version).Split(' ')[1]
+          if ($binaryVersion -ne $version) {
+            throw "tag version $version does not match binary version $binaryVersion"
+          }
+
+          New-Item -ItemType Directory -Path 'release', 'bundle' -Force | Out-Null
+          Copy-Item '.\target\release\rewind.exe' '.\bundle\rewind.exe'
+          @'
+          Extract the archive and place rewind.exe on your PATH.
+          Run `rewind --help` for commands. Source installation and safety
+          limits are documented in the repository README.
+          '@ | Set-Content -LiteralPath '.\bundle\INSTALL.txt' -Encoding utf8NoBOM
+          $archive = ".\release\rewind-$env:RELEASE_TAG-$target.zip"
+          Compress-Archive -Path '.\bundle\*' -DestinationPath $archive -Force
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ matrix.os }}
+          path: release/rewind-*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Create GitHub Release
+    needs:
+      - prepare-release
+      - build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Attach all platform archives to one release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          archives=(artifacts/rewind-*)
+          if [[ "${#archives[@]}" -ne 3 ]]; then
+            echo "expected exactly three platform archives, found ${#archives[@]}" >&2
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" "${archives[@]}" \
+            --verify-tag \
+            --title "Rewind $RELEASE_TAG" \
+            --notes-from-tag
