@@ -624,8 +624,8 @@ deferred until a probe host exists.
 
 ### Context
 
-Phase 7 requires a user-facing install path and reproducible tagged binary
-archives while preserving Rewind's conditional safety claims. The verified
+Phase 7 requires a user-facing install path and versioned tagged binary
+archives with deterministic names while preserving Rewind's conditional safety claims. The verified
 repository baseline is `36cfeba` on a clean, synced `main`, at crate version
 `0.1.0`, with no tags. The manifest says `MIT`, but no `LICENSE`, `LICENCE`,
 or `COPYING` file exists in the repository. Choosing legal terms is an owner

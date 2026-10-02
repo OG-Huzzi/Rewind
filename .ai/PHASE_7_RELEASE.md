@@ -23,8 +23,8 @@ The earlier Phase 6 CI evidence is recorded in `.ai/TEST_STATUS.md`; CI for each
 ## 1. Scope and boundaries
 
 This phase prepares release readiness: crate metadata; a user-facing README;
-a tag-only GitHub release workflow with Linux, macOS, and Windows binary
-archives; version/tag rules; and fixes for factual or operational defects
+a tag-only GitHub release workflow with Linux, macOS, and Windows versioned
+binary archives with deterministic names; version/tag rules; and fixes for factual or operational defects
 found in the first-user surface audit.
 
 Out of scope: code signing and notarization; Homebrew, Scoop, Chocolatey,
@@ -77,6 +77,11 @@ technical readiness informs the owner but does not make the decision.
 Add `.github/workflows/release.yml` with only `push.tags: ["v*"]` as its
 trigger. Do not change or weaken `.github/workflows/ci.yml`, which remains the
 authority for normal pushes and pull requests.
+
+The first job is a read-only preflight: it checks that the tag version equals
+the Cargo package version and that Cargo names an owner-selected license whose
+file exists in the repository. With no license file/metadata, the run fails
+before it deletes any existing release or builds any artifact.
 
 For each of `ubuntu-latest`, `macos-latest`, and `windows-latest`, run the CI
 gates in this order: `cargo fmt --check`; `cargo check --all-targets`; `cargo
